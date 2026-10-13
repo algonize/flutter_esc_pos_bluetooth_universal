@@ -19,6 +19,10 @@ Future<List<int>> buildWidgetTicket(
     InheritedTheme.captureAll(context, Material(color: Colors.white, child: child)),
     delay: const Duration(milliseconds: kIsWeb ? 500 : 200),
     context: context,
+    // Without a width limit the widget is laid out at infinite width, and any
+    // Row + Expanded (or other width-filling layout) fails to lay out. Cap it
+    // at the print-head width so ordinary receipt layouts just work.
+    constraints: BoxConstraints(maxWidth: paperSize.widthPx),
   );
   // Image work runs in a background isolate on native platforms (inline on web).
   return compute(encodeTicketImage, (png, paperSize, profile));

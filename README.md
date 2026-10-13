@@ -37,7 +37,7 @@ It supports both kinds of Bluetooth printer:
 |---|---|---|---|
 | Android | ✅ | ✅ | Scan + paired list |
 | iOS / iPadOS | ✅ | ❌ (Apple allows Classic only for MFi accessories) | Scan |
-| macOS | ✅ | ✅ | Scan + paired list |
+| macOS | ✅ | ✅ through the printer's BLE side when it has one; RFCOMM is unreliable | Scan + paired list |
 | Windows | ✅ | ✅ | Scan + paired list |
 | Linux | ✅ | ✅ | Scan + paired list |
 | Web: Chrome, Edge, Opera, Brave | ✅ Web Bluetooth | ✅ Web Serial (desktop Chrome 117+, paired printers) | Browser chooser |
@@ -86,6 +86,7 @@ macOS `DebugProfile.entitlements` and `Release.entitlements`:
 <key>com.apple.security.device.bluetooth</key>
 <true/>
 ```
+Classic (RFCOMM) connections are unreliable on current macOS: the connection attempt can stall until it times out. Most Classic POS printers are dual-mode, so on macOS a Classic printer is reached through its BLE side when it has one (found by name), and the manager's `selectedPrinter` becomes that BLE printer. RFCOMM is only tried for printers with no BLE side.
 </details>
 
 <details>
@@ -244,6 +245,7 @@ PrinterBluetoothManager(
 | `connectionStatus` / `status` | `disconnected`, `connecting`, `connected`, `disconnecting` |
 | `printTicket(bytes, {isDisconnect})` | Sends raw ESC/POS bytes |
 | `printWidget(context, {child, isDisconnect})` | Renders and prints a widget |
+| `lastError` | The underlying error behind the last failed connect or print, for logs and bug reports |
 | `dispose()` | Disconnects and releases the manager |
 
 Every action returns a `PosPrintResult` with a readable `msg`. The names shared with the network package (`success`, `timeout`, `ticketEmpty`, `printInProgress`, …) mean the same thing. Bluetooth adds `bluetoothUnavailable`, `permissionDenied`, `unsupported`, `userCancelled`, `printerAccessRequired`, `noWritableCharacteristic`, `connectionFailed` and `writeFailed`.
@@ -275,6 +277,8 @@ The platform is picked at compile time by conditional import, like the network p
 | Printer not in the scan | Many Classic printers only appear when paired. Pair it in system settings, then use `pairedPrinters()`. |
 | iPhone can't see a Classic printer | iOS doesn't allow Classic SPP. Use a BLE or dual-mode printer. |
 | `noWritableCharacteristic` | Add the printer's service and characteristic through `bleServices`. |
+| BLE print reports success but nothing prints | The data went to a characteristic that isn't wired to the print engine. Put the right pair first in `bleServices`, or clear the saved `serviceUuid` / `characteristicUuid` so it's detected again. |
+| macOS: Classic printer times out | Use the printer's BLE entry from the scan. Dual-mode printers are routed there automatically. |
 | Ticket cut short or garbled | Lower `bleChunkSize` / `classicChunkSize` or add a small delay. |
 | `printerAccessRequired` on web | Call `requestPrinter()` again from a button. The browser forgot the device. |
 | Classic printer won't connect | Pair it first. For old printers, try `classicSecureConnection: false`. |

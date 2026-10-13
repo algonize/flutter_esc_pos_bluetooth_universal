@@ -19,14 +19,16 @@ class BlePrinterService {
 
 /// UUID pairs used by common ESC/POS BLE printers and dual-mode modules.
 ///
+/// Many printers expose several of these, and not all of them are wired to the
+/// print engine: on the Deli ES421, for one, the ISSC pair accepts writes and
+/// drops them, while 18F0 and FF00 reach the printer. The printer-specific services
+/// therefore come first, the Bluetooth module's generic UART last, and the
+/// transport confirms which one the printer answers on (see
+/// [rankWriteCharacteristics]).
+///
 /// On the web these services must be listed when the device is requested, or
 /// the browser hides them, so this list is also passed as `optionalServices`.
 const List<BlePrinterService> defaultBlePrinterServices = [
-  BlePrinterService(
-    '49535343-fe7d-4ae5-8fa9-9fafd205e455',
-    '49535343-8841-43f4-a8d4-ecbe34729bb3',
-    label: 'ISSC/Microchip transparent UART (many dual-mode printers)',
-  ),
   BlePrinterService(
     '000018f0-0000-1000-8000-00805f9b34fb',
     '00002af1-0000-1000-8000-00805f9b34fb',
@@ -41,6 +43,11 @@ const List<BlePrinterService> defaultBlePrinterServices = [
     'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
     'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f',
     label: 'E7810A71 printer service',
+  ),
+  BlePrinterService(
+    '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+    '49535343-8841-43f4-a8d4-ecbe34729bb3',
+    label: 'ISSC/Microchip transparent UART (many dual-mode printers)',
   ),
 ];
 
@@ -84,50 +91,77 @@ String normalizeUuid(String uuid) {
   return value;
 }
 
-/// Picks the characteristic to send print data to, in this order:
+/// Every characteristic print data could be sent to, most likely first:
 /// 1. the pair saved from a previous connection ([cachedService] and
 ///    [cachedCharacteristic]),
-/// 2. the first match from [preferred],
-/// 3. any characteristic that supports write without response, outside the
+/// 2. matches from [preferred], in its order,
+/// 3. other characteristics that support write without response, outside the
 ///    standard GATT services,
-/// 4. any characteristic that supports write, outside the standard services.
+/// 4. other characteristics that support write, outside the standard services.
 ///
-/// Returns null when the device has nothing writable.
-BleCharacteristicInfo? resolveWriteCharacteristic(
+/// Empty when the device has nothing writable.
+List<BleCharacteristicInfo> rankWriteCharacteristics(
   List<BleCharacteristicInfo> available, {
   List<BlePrinterService> preferred = defaultBlePrinterServices,
   String? cachedService,
   String? cachedCharacteristic,
 }) {
   final writable = available.where((c) => c.isWritable).toList();
-  if (writable.isEmpty) return null;
-
-  BleCharacteristicInfo? find(String service, String characteristic) {
-    final s = normalizeUuid(service);
-    final c = normalizeUuid(characteristic);
-    for (final info in writable) {
-      if (normalizeUuid(info.serviceUuid) == s && normalizeUuid(info.characteristicUuid) == c) {
-        return info;
-      }
-    }
-    return null;
+  final ranked = <BleCharacteristicInfo>[];
+  void add(BleCharacteristicInfo? info) {
+    if (info != null && !ranked.contains(info)) ranked.add(info);
   }
 
   if (cachedService != null && cachedCharacteristic != null) {
-    final cached = find(cachedService, cachedCharacteristic);
-    if (cached != null) return cached;
+    add(_find(writable, cachedService, cachedCharacteristic));
   }
-
   for (final known in preferred) {
-    final match = find(known.serviceUuid, known.writeCharacteristicUuid);
-    if (match != null) return match;
+    add(_find(writable, known.serviceUuid, known.writeCharacteristicUuid));
   }
 
-  final custom = writable
-      .where((c) => !_standardServices.contains(normalizeUuid(c.serviceUuid)))
-      .toList();
-  for (final info in custom) {
-    if (info.canWriteWithoutResponse) return info;
+  final custom = writable.where((c) => !_standardServices.contains(normalizeUuid(c.serviceUuid)));
+  custom.where((c) => c.canWriteWithoutResponse).forEach(add);
+  custom.forEach(add);
+  return ranked;
+}
+
+/// The first of [rankWriteCharacteristics], or null when nothing is writable.
+BleCharacteristicInfo? resolveWriteCharacteristic(
+  List<BleCharacteristicInfo> available, {
+  List<BlePrinterService> preferred = defaultBlePrinterServices,
+  String? cachedService,
+  String? cachedCharacteristic,
+}) {
+  return rankWriteCharacteristics(
+    available,
+    preferred: preferred,
+    cachedService: cachedService,
+    cachedCharacteristic: cachedCharacteristic,
+  ).firstOrNull;
+}
+
+/// Whether [info] is one of the [preferred] printer characteristics, as
+/// opposed to an unknown writable one found by the fallback.
+bool isKnownPrinterCharacteristic(
+  BleCharacteristicInfo info, {
+  List<BlePrinterService> preferred = defaultBlePrinterServices,
+}) {
+  return preferred.any(
+    (known) => _find([info], known.serviceUuid, known.writeCharacteristicUuid) != null,
+  );
+}
+
+BleCharacteristicInfo? _find(
+  List<BleCharacteristicInfo> candidates,
+  String service,
+  String characteristic,
+) {
+  final s = normalizeUuid(service);
+  final c = normalizeUuid(characteristic);
+  for (final info in candidates) {
+    if (normalizeUuid(info.serviceUuid) == s && normalizeUuid(info.characteristicUuid) == c) {
+      return info;
+    }
   }
-  return custom.isEmpty ? null : custom.first;
+  return null;
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
-import 'dart:typed_data';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_classic_bluetooth/flutter_classic_bluetooth.dart';
 
 import '../enums.dart';
@@ -35,6 +36,11 @@ class ClassicTransport implements PrinterTransport {
         address: _printer.id,
         secure: _options.classicSecureConnection,
         timeout: timeout,
+        // A retry fired while the first attempt is still finishing natively
+        // tends to fail as busy, so allow one retry only. None on macOS, where
+        // an RFCOMM open that stalls never completes, so a retry only doubles
+        // the wait (see MacClassicTransport).
+        maxAttempts: Platform.isMacOS ? 1 : 2,
       );
     } on BtcTimeoutException catch (e) {
       throw PrinterTransportException(PosPrintResult.timeout, e);

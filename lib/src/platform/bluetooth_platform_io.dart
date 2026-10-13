@@ -11,6 +11,7 @@ import '../models/bluetooth_printer.dart';
 import '../models/bluetooth_write_options.dart';
 import '../transport/ble_transport.dart';
 import '../transport/classic_transport.dart';
+import '../transport/mac_classic_transport.dart';
 import '../transport/printer_transport.dart';
 import 'bluetooth_platform.dart';
 
@@ -252,10 +253,14 @@ class IoBluetoothPlatform implements BluetoothPlatform {
         options: options,
         services: bleServices,
       ),
-      BluetoothPrinterType.classic =>
-        _classicSupported
-            ? ClassicTransport(printer, options: options)
-            : _UnsupportedTransport(printer),
+      BluetoothPrinterType.classic when !_classicSupported => _UnsupportedTransport(printer),
+      BluetoothPrinterType.classic when Platform.isMacOS => MacClassicTransport(
+        printer,
+        license: license,
+        options: options,
+        services: bleServices,
+      ),
+      BluetoothPrinterType.classic => ClassicTransport(printer, options: options),
     };
   }
 }

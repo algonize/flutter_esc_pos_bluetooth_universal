@@ -59,7 +59,12 @@ class _PrinterPageState extends State<PrinterPage> {
     final result = await action();
     if (!mounted) return;
     setState(() => _busy = false);
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result.msg)));
+    // On failure, show the underlying error too: it is what to report.
+    final detail = result.isSuccess ? '' : '\n${_manager.lastError ?? ''}';
+    if (!result.isSuccess) debugPrint('Print failed: ${result.name}: ${_manager.lastError}');
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${result.msg}$detail'), duration: const Duration(seconds: 8)),
+    );
   }
 
   Future<PosPrintResult> _printTestTicket() async {

@@ -73,6 +73,41 @@ void main() {
       final ff02 = _c('ff00', 'ff02', write: true);
       expect(resolveWriteCharacteristic([custom, ff02]), ff02);
     });
+
+    test('ranks printer services before the module UART (Deli ES421 layout)', () {
+      // The ES421 exposes all four known pairs; only 18F0 and FF00 reach the printer.
+      final s18f0 = _c('18f0', '2af1', write: true, noResponse: true);
+      final ff02 = _c('ff00', 'ff02', write: true, noResponse: true);
+      final e781 = _c(
+        'e7810a71-73ae-499d-8c15-faa9aef0c3f2',
+        'bef8d6c9-9c21-4c9e-b632-bd58c1009f9f',
+        write: true,
+        noResponse: true,
+      );
+      expect(rankWriteCharacteristics([issc, custom, e781, ff02, s18f0, deviceName]), [
+        s18f0,
+        ff02,
+        e781,
+        issc,
+        custom,
+      ]);
+      expect(resolveWriteCharacteristic([issc, s18f0]), s18f0);
+    });
+
+    test('ranks the cached pair first without repeating it', () {
+      final ranked = rankWriteCharacteristics(
+        [custom, issc],
+        cachedService: issc.serviceUuid,
+        cachedCharacteristic: issc.characteristicUuid,
+      );
+      expect(ranked, [issc, custom]);
+    });
+
+    test('tells known printer characteristics from fallback ones', () {
+      expect(isKnownPrinterCharacteristic(issc), isTrue);
+      expect(isKnownPrinterCharacteristic(_c('ff00', 'ff02', write: true)), isTrue);
+      expect(isKnownPrinterCharacteristic(custom), isFalse);
+    });
   });
 
   group('chunking', () {

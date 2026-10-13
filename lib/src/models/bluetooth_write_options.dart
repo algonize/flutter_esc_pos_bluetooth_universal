@@ -31,11 +31,13 @@ class BluetoothWriteOptions {
   final int? bleChunkSize;
 
   /// Pause after each BLE write. Usually not needed: writes already wait until
-  /// the operating system has sent each packet.
+  /// the operating system accepts each packet.
   final Duration bleChunkDelay;
 
   /// Use "write without response" when the printer supports it. It is several
-  /// times faster; turn it off for printers that drop data.
+  /// times faster; turn it off for printers that drop data. The last chunk is
+  /// still sent with response when the printer allows it, so the ticket is
+  /// known to have arrived before the link is closed.
   final bool preferWriteWithoutResponse;
 
   /// Bytes per write on Bluetooth Classic (native platforms).

@@ -36,7 +36,7 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
     required this._license,
     this._paperSize = ThermalPosPrinterPageSize.size80mm,
     this._profile,
-    this._timeout = const Duration(seconds: 10),
+    this._timeout = const Duration(seconds: 20),
     this._writeOptions = const BluetoothWriteOptions(),
     this._bleServices = defaultBlePrinterServices,
     BluetoothPrinter? printer,
@@ -54,6 +54,7 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
   BluetoothPrinter? _selectedPrinter;
   PrinterTransport? _transport;
   bool _isPrinting = false;
+  Object? _lastError;
 
   final _statusController = StreamController<BluetoothConnectionStatus>.broadcast();
   BluetoothConnectionStatus _status = BluetoothConnectionStatus.disconnected;
@@ -150,6 +151,10 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
   @override
   bool get isConnected => _transport?.isConnected ?? false;
 
+  /// The underlying error behind the last failed connect or print, for logs and
+  /// bug reports. The returned [PosPrintResult] is the user-facing summary.
+  Object? get lastError => _lastError;
+
   @override
   ThermalPosPrinterPageSize get paperSize => _paperSize;
 
@@ -161,6 +166,7 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
     final printer = _selectedPrinter;
     if (printer == null) return PosPrintResult.printerNotSelected;
     if (isConnected) return PosPrintResult.success;
+    _lastError = null;
 
     // Connecting while scanning is unreliable on Android, so stop the scan.
     if (isScanning) await stopScan();
@@ -184,9 +190,11 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
       _setStatus(BluetoothConnectionStatus.connected);
       return PosPrintResult.success;
     } on PrinterTransportException catch (e) {
+      _lastError = e.cause ?? e;
       _setStatus(BluetoothConnectionStatus.disconnected);
       return e.result;
-    } catch (_) {
+    } catch (e) {
+      _lastError = e;
       _setStatus(BluetoothConnectionStatus.disconnected);
       return PosPrintResult.connectionFailed;
     }
@@ -229,9 +237,11 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
       await _transport!.write(data);
       return PosPrintResult.success;
     } on PrinterTransportException catch (e) {
+      _lastError = e.cause ?? e;
       await disconnect();
       return e.result;
-    } catch (_) {
+    } catch (e) {
+      _lastError = e;
       await disconnect();
       return PosPrintResult.writeFailed;
     } finally {
@@ -261,7 +271,9 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
       );
       if (bytes.isEmpty) return PosPrintResult.ticketEmpty;
       return await printTicket(bytes, isDisconnect: isDisconnect);
-    } catch (_) {
+    } catch (e) {
+      // Rendering failed, for example a widget that can't lay out at paper width.
+      _lastError = e;
       return PosPrintResult.ticketEmpty;
     }
   }

@@ -7,16 +7,20 @@ First release of **flutter_esc_pos_bluetooth_universal**, a complete rewrite of 
 - **Bluetooth Classic (SPP) Printers**: Support for the kind most 58/80 mm POS printers are.
   - Android, Windows, macOS and Linux use `flutter_classic_bluetooth`.
   - Chromium browsers use Web Serial over Bluetooth RFCOMM (desktop Chrome 117+), with no browser extension needed.
+  - On macOS, where RFCOMM connections can stall until they time out, a Classic printer is reached through its BLE side when it has one (most are dual-mode), found by name. RFCOMM is the fallback, tried once.
   - iOS is BLE only, because Apple allows Classic Bluetooth only for MFi accessories.
 - **Smart Characteristic Selection**: Finds the BLE characteristic to print on:
   - It first tries a table of common printer services (`defaultBlePrinterServices`), then falls back to any writable characteristic.
+  - Printers often expose several known services and only some reach the print engine (the Deli ES421 takes data on 18F0 and FF00, while its ISSC UART accepts writes and drops them). So printer services come before the module UART, and when several match, a status request (DLE EOT 1, prints nothing) picks the one the printer answers on.
   - The choice is saved on the printer, so later connections skip the search.
   - Apps can add their own UUIDs through `bleServices`.
 - **Reliable Writes**:
   - BLE data is sent in chunks sized to the negotiated MTU, and the size steps down automatically when a write is rejected.
+  - A BLE write without response only queues the data, and closing the link straight after throws the queue away. So the last chunk is sent with response when the printer allows it, and the ticket is known to have arrived before the link closes.
+  - BLE connects wait briefly for Bluetooth to be ready, so a printer reconnected right at app launch doesn't fail while the adapter state is still unknown.
   - Classic and Web Serial stream in larger slices with a short pause between them.
   - Everything can be tuned through `BluetoothWriteOptions`.
-- **Widget Printing**: `printWidget` renders any Flutter widget as a receipt. It uses the same image pipeline as the network package: 8-bit normalisation (the iOS fix), clamping to the print-head width, and image processing in a background isolate on native platforms.
+- **Widget Printing**: `printWidget` renders any Flutter widget as a receipt. The widget is laid out at most as wide as the paper, so width-filling layouts such as `Row` + `Expanded` work. It uses the same image pipeline as the network package: 8-bit normalisation (the iOS fix), clamping to the print-head width, and image processing in a background isolate on native platforms.
 - **Discovery**:
   - On native platforms, BLE and Classic scanning are merged into one list, with paired printers first, then by signal strength.
   - `pairedPrinters()` lists printers usable without scanning.
@@ -27,6 +31,7 @@ First release of **flutter_esc_pos_bluetooth_universal**, a complete rewrite of 
   - `checkAvailability()` reports whether Bluetooth is on, off, unauthorized or unsupported.
   - `requestPermissions()` asks for Bluetooth permissions on Android 12+.
   - `connectionStatus` streams the connection state.
+  - `lastError` holds the underlying error behind the last failure, for logs and bug reports.
 - **Clear Results**: `PosPrintResult` is now an enum with a readable `msg`. Names shared with the network package (`success`, `timeout`, `ticketEmpty`, `printInProgress`, …) mean the same thing. Bluetooth adds `bluetoothUnavailable`, `permissionDenied`, `unsupported`, `userCancelled`, `printerAccessRequired`, `noWritableCharacteristic`, `connectionFailed` and `writeFailed`.
 - **Paper Size Support**: 58 mm, 72 mm and 80 mm paper widths.
 - **Example App**: A full example for every platform. It covers scanning or the web chooser, a test ticket and widget printing, with Bluetooth permissions already configured.
