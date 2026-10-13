@@ -1,0 +1,44 @@
+name: flutter_esc_pos_bluetooth_universal
+description: >-
+  Print receipts on ESC/POS thermal Bluetooth printers (BLE and Classic SPP) from
+  Android, iOS, macOS, Windows, Linux and Flutter Web, with one API.
+version: 1.0.0
+homepage: https://github.com/algonize/flutter_esc_pos_bluetooth_universal
+repository: https://github.com/algonize/flutter_esc_pos_bluetooth_universal
+issue_tracker: https://github.com/algonize/flutter_esc_pos_bluetooth_universal/issues
+topics:
+  - bluetooth
+  - printer
+  - thermal-printer
+  - esc-pos
+  - pos
+
+environment:
+  # flutter_classic_bluetooth needs Dart 3.12 / Flutter 3.44.
+  sdk: ">=3.12.0 <4.0.0"
+  flutter: ">=3.44.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_blue_plus: ^2.3.14
+  flutter_classic_bluetooth: ^1.7.0
+  flutter_esc_pos_utils: ^1.0.1
+  image: ^4.8.0
+  screenshot: ^3.0.0
+  web: ^1.1.1
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+platforms:
+  android:
+  ios:
+  linux:
+  macos:
+  web:
+  windows:
+
+flutter:
