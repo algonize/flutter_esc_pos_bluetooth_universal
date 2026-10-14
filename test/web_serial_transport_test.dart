@@ -27,7 +27,7 @@ const _fakePort = r'''
       drained();
     }
   }, 2);
-  port.open = async () => { port.opened = true; };
+  port.open = async (options) => { port.opened = true; port.bufferSize = options.bufferSize; };
   Object.defineProperty(port, 'writable', {
     get() {
       if (!port.opened || port.closing) return null;
@@ -96,6 +96,17 @@ void main() {
     await transport.write(ticket);
     await transport.disconnect();
     expect(_sent(port), ticket);
+  });
+
+  test('opens the port with a buffer far above the 255 byte default', () async {
+    // Chrome sends one buffer at a time, waiting on the link after each.
+    final port = _newPort();
+    final transport = _transport(port);
+    await transport.connect(const Duration(seconds: 5));
+    final bufferSize = (port as JSObject).getProperty<JSNumber>('bufferSize'.toJS).toDartInt;
+    await transport.disconnect();
+    expect(bufferSize, WebSerialTransport.webSerialBufferSize);
+    expect(bufferSize, greaterThanOrEqualTo(16 * 1024));
   });
 
   test('prints again on a port kept open', () async {

@@ -26,7 +26,7 @@ It supports both kinds of Bluetooth printer:
   - Classic and Web Serial stream in large slices.
   - A print only reports success once the data has actually left: on the web, every BLE chunk is confirmed by the printer and Web Serial waits until the browser has sent every byte.
   - All of this can be tuned with `BluetoothWriteOptions`.
-- **Widget printing.** `printWidget` renders any Flutter widget (logos, QR codes, any script) through the same proven 8-bit image pipeline as the network package.
+- **Widget printing.** `printWidget` renders any Flutter widget (logos, QR codes, any script) into the same bytes as the network package prints, built straight from the captured pixels, so even long receipts encode in a few milliseconds, in the browser too.
 - **Raw ESC/POS.** `printTicket` sends bytes from the re-exported `flutter_esc_pos_utils` `Generator`.
 - **Save and reconnect.** `BluetoothPrinter` is plain JSON-serialisable data.
 

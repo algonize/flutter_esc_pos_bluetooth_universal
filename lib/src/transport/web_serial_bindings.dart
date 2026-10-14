@@ -35,7 +35,9 @@ extension type SerialPortFilter._(JSObject _) implements JSObject {
 }
 
 extension type SerialOptions._(JSObject _) implements JSObject {
-  external factory SerialOptions({int baudRate});
+  external factory SerialOptions({int baudRate, int bufferSize});
+
+  external int get bufferSize;
 }
 
 extension type SerialPortInfo._(JSObject _) implements JSObject {

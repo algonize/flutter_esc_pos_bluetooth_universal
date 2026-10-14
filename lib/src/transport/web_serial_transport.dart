@@ -24,6 +24,13 @@ class WebSerialTransport implements PrinterTransport {
   /// writable stream has finished, so a stalled link could hold it forever.
   static const _closeTimeout = Duration(seconds: 5);
 
+  /// Chrome's buffer between the page and the Bluetooth link. Chrome sends
+  /// what the buffer holds as one burst and reads nothing more until the burst
+  /// is done, so with the default of 255 bytes a widget receipt (8 to 100 KB)
+  /// went out 255 bytes at a time, waiting on the link after each. A larger
+  /// buffer lets each burst fill the link.
+  static const webSerialBufferSize = 16 * 1024;
+
   @override
   BluetoothPrinter get printer => _printer;
 
@@ -36,7 +43,12 @@ class WebSerialTransport implements PrinterTransport {
     final port = _port;
     if (port == null) throw const PrinterTransportException(PosPrintResult.printerAccessRequired);
     try {
-      await port.open(SerialOptions(baudRate: _options.webSerialBaudRate)).toDart.timeout(timeout);
+      await port
+          .open(
+            SerialOptions(baudRate: _options.webSerialBaudRate, bufferSize: webSerialBufferSize),
+          )
+          .toDart
+          .timeout(timeout);
       _open = true;
     } on TimeoutException catch (e) {
       throw PrinterTransportException(PosPrintResult.timeout, e);

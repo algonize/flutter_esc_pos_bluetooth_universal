@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter_esc_pos_bluetooth_universal/flutter_esc_pos_bluetooth_universal.dart';
 import 'package:flutter_esc_pos_bluetooth_universal/src/models/ble_printer_service.dart';
 import 'package:flutter_esc_pos_bluetooth_universal/src/raster/widget_raster.dart';
@@ -232,9 +230,15 @@ void main() {
     TestWidgetsFlutterBinding.ensureInitialized();
     final profile = await CapabilityProfile.load();
     // A 700px wide image must be scaled down to the 576 dot print head.
-    final image = img.Image(width: 700, height: 40)..clear(img.ColorRgb8(255, 255, 255));
-    final png = Uint8List.fromList(img.encodePng(image));
-    final bytes = encodeTicketImage((png, ThermalPosPrinterPageSize.size80mm, profile));
+    final image = img.Image(width: 700, height: 40, numChannels: 4)
+      ..clear(img.ColorRgba8(255, 255, 255, 255));
+    final bytes = encodeTicketPixels(
+      image.getBytes(order: img.ChannelOrder.rgba),
+      700,
+      40,
+      paperSize: ThermalPosPrinterPageSize.size80mm,
+      profile: profile,
+    );
     expect(bytes, isNotEmpty);
     bool contains(List<int> pattern) {
       for (var i = 0; i + pattern.length <= bytes.length; i++) {
