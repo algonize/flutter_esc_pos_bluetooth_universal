@@ -14,6 +14,12 @@ const List<int> bleChunkLadder = [512, 244, 182, 128, 100, 64, 20];
 /// The smallest BLE write size.
 const int minBleChunk = 20;
 
+/// The first BLE write size tried in a browser, for writes with response. It
+/// fills one packet at the MTU of 185 that Apple devices and many printers
+/// settle on. On a smaller MTU it goes as a long write, or is rejected and
+/// stepped down.
+const int webBleChunkWithResponse = 182;
+
 /// The next smaller size from [bleChunkLadder], or [minBleChunk].
 int nextSmallerBleChunk(int current) {
   for (final size in bleChunkLadder) {

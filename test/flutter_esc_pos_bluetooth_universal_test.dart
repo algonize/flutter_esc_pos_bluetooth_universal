@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter_esc_pos_bluetooth_universal/flutter_esc_pos_bluetooth_universal.dart';
 import 'package:flutter_esc_pos_bluetooth_universal/src/models/ble_printer_service.dart';
 import 'package:flutter_esc_pos_bluetooth_universal/src/raster/widget_raster.dart';
+import 'package:flutter_esc_pos_bluetooth_universal/src/transport/ble_transport.dart';
 import 'package:flutter_esc_pos_bluetooth_universal/src/utils/chunking.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -131,6 +132,46 @@ void main() {
       expect(bleChunkForMtu(23), 20);
       expect(bleChunkForMtu(185), 182);
       expect(bleChunkForMtu(517), 512);
+    });
+
+    test('starts web writes with response larger, without response at 20', () {
+      expect(initialBleChunk(mtu: 185, isWeb: false, withoutResponse: true), 182);
+      expect(initialBleChunk(mtu: 23, isWeb: true, withoutResponse: false), 182);
+      expect(initialBleChunk(mtu: 23, isWeb: true, withoutResponse: true), 20);
+      // A rejected size steps down to one that fits the smallest link.
+      expect(nextSmallerBleChunk(webBleChunkWithResponse), 128);
+    });
+  });
+
+  group('BLE write type', () {
+    final both = _c('18f0', '2af1', write: true, noResponse: true);
+    final responseOnly = _c('18f0', '2af1', write: true);
+    final noResponseOnly = _c('18f0', '2af1', noResponse: true);
+
+    test('native platforms follow the preference', () {
+      expect(bleWritesWithoutResponse(both, preferWithoutResponse: true, isWeb: false), isTrue);
+      expect(bleWritesWithoutResponse(both, preferWithoutResponse: false, isWeb: false), isFalse);
+    });
+
+    test('the web writes with response whenever the printer allows it', () {
+      expect(bleWritesWithoutResponse(both, preferWithoutResponse: true, isWeb: true), isFalse);
+      expect(
+        bleWritesWithoutResponse(responseOnly, preferWithoutResponse: true, isWeb: true),
+        isFalse,
+      );
+    });
+
+    test('uses what the printer supports when it supports one kind', () {
+      for (final isWeb in [false, true]) {
+        expect(
+          bleWritesWithoutResponse(noResponseOnly, preferWithoutResponse: false, isWeb: isWeb),
+          isTrue,
+        );
+        expect(
+          bleWritesWithoutResponse(responseOnly, preferWithoutResponse: true, isWeb: isWeb),
+          isFalse,
+        );
+      }
     });
   });
 

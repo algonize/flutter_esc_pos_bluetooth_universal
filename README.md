@@ -24,6 +24,7 @@ It supports both kinds of Bluetooth printer:
 - **Fast and safe writes.**
   - BLE chunks follow the negotiated MTU and step down automatically if a write is rejected.
   - Classic and Web Serial stream in large slices.
+  - A print only reports success once the data has actually left: on the web, every BLE chunk is confirmed by the printer and Web Serial waits until the browser has sent every byte.
   - All of this can be tuned with `BluetoothWriteOptions`.
 - **Widget printing.** `printWidget` renders any Flutter widget (logos, QR codes, any script) through the same proven 8-bit image pipeline as the network package.
 - **Raw ESC/POS.** `printTicket` sends bytes from the re-exported `flutter_esc_pos_utils` `Generator`.
@@ -100,7 +101,7 @@ Nothing extra. Classic printers usually need pairing in the system's Bluetooth s
 
 - Serve the app over **HTTPS** (`localhost` is fine while developing).
 - Browsers can't scan, so printers are picked with `requestPrinter()`, which **must be called from a button tap**.
-- Classic printers must be **paired in the operating system** first; they then appear in Chrome's serial port chooser.
+- Classic printers must be **paired in the operating system** first; they then appear in Chrome's serial port chooser. Bluetooth Classic printers speak the Serial Port Profile (a serial cable over Bluetooth), which is why Chrome offers them through Web Serial: Web Bluetooth only reaches BLE.
 </details>
 
 ---
@@ -201,7 +202,7 @@ The defaults suit most printers. If long tickets or images come out cut short or
 PrinterBluetoothManager(
   license: License.nonprofit,
   writeOptions: const BluetoothWriteOptions(
-    bleChunkSize: 100,                                 // default: MTU - 3 (20 on web)
+    bleChunkSize: 100,                                 // default: MTU - 3 (182 on web)
     bleChunkDelay: Duration(milliseconds: 5),
     preferWriteWithoutResponse: true,
     classicChunkSize: 1024,
@@ -211,7 +212,7 @@ PrinterBluetoothManager(
 );
 ```
 
-On the web, BLE writes default to 20 bytes, because browsers don't expose the MTU. For faster printing on a printer you've tested, set `bleChunkSize` (for example `180`).
+On the web, every BLE chunk is written with response, so the printer confirms each one. Browsers report a write without response as done straight away, and Chrome on macOS drops the ones the system can't queue without any error, which made tickets vanish while the print "succeeded". Chunks start at 182 bytes. Browsers don't expose the MTU, but a longer write with response is sent as a long write or rejected, never cut short, and a rejected size steps down. A printer that only takes write without response gets 20-byte chunks, 20 ms apart.
 
 If your BLE printer uses UUIDs not in `defaultBlePrinterServices`, add them:
 
@@ -281,6 +282,8 @@ The platform is picked at compile time by conditional import, like the network p
 | macOS: Classic printer times out | Use the printer's BLE entry from the scan. Dual-mode printers are routed there automatically. |
 | Ticket cut short or garbled | Lower `bleChunkSize` / `classicChunkSize` or add a small delay. |
 | `printerAccessRequired` on web | Call `requestPrinter()` again from a button. The browser forgot the device. |
+| Web on macOS: `unsupported` when connecting a BLE printer | Chrome lists a dual-mode printer paired in System Settings under its Classic address, and can't open BLE on it. Choose it as a Classic printer (Web Serial) instead. |
+| Widget prints nothing, text tickets print | Check the paper size. A 58 mm printer (384 dots, such as the Deli ES421) can't print an image laid out for 80 mm. |
 | Classic printer won't connect | Pair it first. For old printers, try `classicSecureConnection: false`. |
 
 Found a printer that works (or doesn't)? Add it to [printers.md](printers.md).

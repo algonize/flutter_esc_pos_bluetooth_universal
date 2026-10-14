@@ -30,6 +30,38 @@ Future<BluetoothAdapterState> settledAdapterState({
   }
 }
 
+/// Whether print data goes out with write without response on [characteristic].
+///
+/// Native platforms use it when [preferWithoutResponse] allows, as they only
+/// report such a write once the radio can take it. Browsers don't: Chrome
+/// resolves a write without response straight away, and on macOS the writes
+/// that don't fit CoreBluetooth's queue are dropped without an error, so a
+/// ticket can vanish while every write "succeeds". So on the web ([isWeb])
+/// every chunk is written with response whenever the printer allows it, and
+/// each one is confirmed by the printer.
+bool bleWritesWithoutResponse(
+  BleCharacteristicInfo characteristic, {
+  required bool preferWithoutResponse,
+  required bool isWeb,
+}) {
+  if (!characteristic.canWriteWithoutResponse) return false;
+  if (!characteristic.canWrite) return true;
+  return preferWithoutResponse && !isWeb;
+}
+
+/// The BLE write size to start with, when the app hasn't set one.
+/// - Native platforms: the negotiated [mtu] minus 3.
+/// - Web, with response: [webBleChunkWithResponse]. Browsers don't expose
+///   the MTU, but a write with response that is too long for the link is sent
+///   as a long write or rejected, never cut short, and a rejected size steps
+///   down (see [nextSmallerBleChunk]).
+/// - Web, without response: [minBleChunk], as a longer write could be cut
+///   short without an error.
+int initialBleChunk({required int mtu, required bool isWeb, required bool withoutResponse}) {
+  if (!isWeb) return bleChunkForMtu(mtu);
+  return withoutResponse ? minBleChunk : webBleChunkWithResponse;
+}
+
 /// BLE printers through flutter_blue_plus, on every platform including the web
 /// (where flutter_blue_plus uses Web Bluetooth).
 class BleTransport implements PrinterTransport {
@@ -53,6 +85,10 @@ class BleTransport implements PrinterTransport {
   /// How long to let queued writes drain when the printer only accepts write
   /// without response, so there is no acknowledged write to wait on.
   static const _drainDelay = Duration(milliseconds: 500);
+
+  /// Pause between unacknowledged writes in a browser, which gives no sign of
+  /// when one has left. About what one packet per connection event carries.
+  static const _webUnacknowledgedPause = Duration(milliseconds: 20);
 
   BluetoothDevice get _device => BluetoothDevice.fromId(_printer.id);
 
@@ -104,11 +140,15 @@ class BleTransport implements PrinterTransport {
       final chosen = await _confirmWriteCharacteristic(services, ranked);
 
       _characteristic = _characteristicFor(services, chosen);
-      _withoutResponse =
-          chosen.canWriteWithoutResponse &&
-          (_options.preferWriteWithoutResponse || !chosen.canWrite);
+      _withoutResponse = bleWritesWithoutResponse(
+        chosen,
+        preferWithoutResponse: _options.preferWriteWithoutResponse,
+        isWeb: kIsWeb,
+      );
       _canWriteWithResponse = chosen.canWrite;
-      _chunkSize = _options.bleChunkSize ?? (kIsWeb ? minBleChunk : bleChunkForMtu(_device.mtuNow));
+      _chunkSize =
+          _options.bleChunkSize ??
+          initialBleChunk(mtu: _device.mtuNow, isWeb: kIsWeb, withoutResponse: _withoutResponse);
       _printer = _printer.copyWith(
         serviceUuid: chosen.serviceUuid,
         characteristicUuid: chosen.characteristicUuid,
@@ -134,6 +174,9 @@ class BleTransport implements PrinterTransport {
     // response when the printer allows it: writes are handled in order, so its
     // acknowledgement means every chunk before it has arrived.
     final acknowledgeLast = _withoutResponse && _canWriteWithResponse;
+    final pause = _options.bleChunkDelay > Duration.zero
+        ? _options.bleChunkDelay
+        : (kIsWeb && _withoutResponse ? _webUnacknowledgedPause : Duration.zero);
 
     var offset = 0;
     while (offset < data.length) {
@@ -145,7 +188,7 @@ class BleTransport implements PrinterTransport {
           withoutResponse: _withoutResponse && !(isLast && acknowledgeLast),
         );
       } catch (e) {
-        if (!_device.isConnected) {
+        if (_isLinkLost(e)) {
           throw PrinterTransportException(PosPrintResult.printerNotConnected, e);
         }
         // A rejected write is usually too large for the link: retry the same
@@ -157,13 +200,17 @@ class BleTransport implements PrinterTransport {
         throw PrinterTransportException(PosPrintResult.writeFailed, e);
       }
       offset = end;
-      if (_options.bleChunkDelay > Duration.zero) {
-        await Future<void>.delayed(_options.bleChunkDelay);
-      }
+      if (pause > Duration.zero && !isLast) await Future<void>.delayed(pause);
     }
     // Nothing was acknowledged: give the queue time to reach the printer.
     if (_withoutResponse && !acknowledgeLast) await Future<void>.delayed(_drainDelay);
   }
+
+  /// Whether a failed write means the link is gone. flutter_blue_plus_web
+  /// doesn't hear about a link the printer dropped, but the browser's error
+  /// ("GATT Server is disconnected") says so.
+  bool _isLinkLost(Object error) =>
+      !_device.isConnected || (kIsWeb && error.toString().contains('disconnected'));
 
   @override
   Future<void> disconnect() async {
@@ -289,6 +336,10 @@ class BleTransport implements PrinterTransport {
     final text = error.toString().toLowerCase();
     // flutter_blue_plus_web only knows devices chosen in this page session.
     if (kIsWeb && text.contains('could not be found')) return PosPrintResult.printerAccessRequired;
+    // Chrome on macOS lists a dual-mode printer paired in System Settings
+    // under its Classic address, and can't open GATT on it. Its Classic side
+    // works through Web Serial.
+    if (kIsWeb && text.contains('unsupported device')) return PosPrintResult.unsupported;
     if (text.contains('timeout') || text.contains('timed out')) return PosPrintResult.timeout;
     if (text.contains('permission')) return PosPrintResult.permissionDenied;
     return PosPrintResult.connectionFailed;

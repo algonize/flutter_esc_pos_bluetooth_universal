@@ -20,6 +20,10 @@ class WebSerialTransport implements PrinterTransport {
   final BluetoothWriteOptions _options;
   bool _open = false;
 
+  /// How long closing the port may take. Chrome only closes it once the
+  /// writable stream has finished, so a stalled link could hold it forever.
+  static const _closeTimeout = Duration(seconds: 5);
+
   @override
   BluetoothPrinter get printer => _printer;
 
@@ -48,6 +52,7 @@ class WebSerialTransport implements PrinterTransport {
 
   @override
   Future<void> write(List<int> data) async {
+    // Each print gets a fresh stream: the previous one was closed to drain it.
     final writable = _port?.writable;
     if (!_open || writable == null) {
       throw const PrinterTransportException(PosPrintResult.printerNotConnected);
@@ -63,7 +68,14 @@ class WebSerialTransport implements PrinterTransport {
           await Future<void>.delayed(_options.webSerialChunkDelay);
         }
       }
-      await writer.ready.toDart;
+      // A write resolves once Chrome has buffered the bytes, not sent them,
+      // and closing the port aborts the stream, which throws that buffer away
+      // and drops the Bluetooth link at once. That is how a ticket "printed"
+      // with nothing on paper. Closing the stream instead resolves only after
+      // every byte has gone out over Bluetooth.
+      await writer.close().toDart.timeout(drainTimeout(data.length));
+    } on TimeoutException catch (e) {
+      throw PrinterTransportException(PosPrintResult.timeout, e);
     } catch (e) {
       throw PrinterTransportException(PosPrintResult.writeFailed, e);
     } finally {
@@ -76,12 +88,17 @@ class WebSerialTransport implements PrinterTransport {
     if (!_open) return;
     _open = false;
     try {
-      await _port?.close().toDart;
+      await _port?.close().toDart.timeout(_closeTimeout);
     } catch (_) {
-      // Already closed, or the device went away.
+      // Already closed, the device went away, or the link stalled.
     }
   }
 }
+
+/// How long sending [bytes] may take before the link is considered stalled.
+/// Printers hold data back while they print, so this allows for slow ones:
+/// 10 seconds plus a millisecond per byte.
+Duration drainTimeout(int bytes) => Duration(seconds: 10, milliseconds: bytes);
 
 /// Whether a browser error is the DOMException named [name], such as
 /// "NotFoundError". Matched on the error text, which works the same whether the

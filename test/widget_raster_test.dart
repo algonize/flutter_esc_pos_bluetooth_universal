@@ -27,7 +27,12 @@ void main() {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text('ALGORAMMING CAFE'),
-            Row(children: [Expanded(child: Text('Latte')), Text('4.20')]),
+            Row(
+              children: [
+                Expanded(child: Text('Latte')),
+                Text('4.20'),
+              ],
+            ),
           ],
         ),
         paperSize: ThermalPosPrinterPageSize.size58mm,
