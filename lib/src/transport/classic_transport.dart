@@ -7,15 +7,21 @@ import 'package:flutter_classic_bluetooth/flutter_classic_bluetooth.dart';
 import '../enums.dart';
 import '../models/bluetooth_printer.dart';
 import '../models/bluetooth_write_options.dart';
+import '../utils/write_pacer.dart';
 import 'printer_transport.dart';
 
 /// Bluetooth Classic (SPP / RFCOMM) printers through flutter_classic_bluetooth.
 /// Android, Windows, macOS and Linux. Native platforms only.
 class ClassicTransport implements PrinterTransport {
-  ClassicTransport(this._printer, {required this._options});
+  ClassicTransport(this._printer, {required this._options, this._pacer});
 
   final BluetoothPrinter _printer;
   final BluetoothWriteOptions _options;
+
+  /// Keeps the data at the printer's print speed. RFCOMM has flow control,
+  /// but most printers take the data before checking for room in their own
+  /// buffer, which a long ticket sent at link speed overruns.
+  final WritePacer? _pacer;
   final FlutterClassicBluetooth _bluetooth = FlutterClassicBluetooth();
 
   BtcConnection? _connection;
@@ -72,6 +78,7 @@ class ClassicTransport implements PrinterTransport {
       final size = _options.classicChunkSize;
       for (var offset = 0; offset < data.length; offset += size) {
         final end = offset + size < data.length ? offset + size : data.length;
+        await _pacer?.waitFor(data, offset, end);
         await connection.output.add(Uint8List.fromList(data.sublist(offset, end)));
         if (_options.classicChunkDelay > Duration.zero) {
           await Future<void>.delayed(_options.classicChunkDelay);

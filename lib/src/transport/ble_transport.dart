@@ -8,6 +8,7 @@ import '../models/ble_printer_service.dart';
 import '../models/bluetooth_printer.dart';
 import '../models/bluetooth_write_options.dart';
 import '../utils/chunking.dart';
+import '../utils/write_pacer.dart';
 import 'printer_transport.dart';
 
 /// The adapter state once it has settled, waiting up to [timeout].
@@ -75,12 +76,19 @@ class BleTransport implements PrinterTransport {
     required this._license,
     required this._options,
     required this._services,
+    this._pacer,
   });
 
   BluetoothPrinter _printer;
   final License _license;
   final BluetoothWriteOptions _options;
   final List<BlePrinterService> _services;
+
+  /// Keeps the data at the printer's print speed. BLE gives no flow control
+  /// that reaches the print engine: a write without response is never
+  /// refused, and a long ticket sent at link speed overruns the printer's
+  /// buffer, whose overflow prints as garbage.
+  final WritePacer? _pacer;
 
   BluetoothCharacteristic? _characteristic;
   bool _withoutResponse = false;
@@ -201,6 +209,7 @@ class BleTransport implements PrinterTransport {
     while (offset < data.length) {
       final end = offset + _chunkSize < data.length ? offset + _chunkSize : data.length;
       final isLast = end == data.length;
+      await _pacer?.waitFor(data, offset, end);
       try {
         await characteristic.write(
           data.sublist(offset, end),
@@ -249,6 +258,7 @@ class BleTransport implements PrinterTransport {
       final isLast = end == data.length;
       // Confirm this chunk when the batch is full, or it is the last one.
       final confirm = isLast || unconfirmed >= batchSize;
+      await _pacer?.waitFor(data, offset, end);
       try {
         await characteristic.write(data.sublist(offset, end), withoutResponse: !confirm);
       } catch (e) {

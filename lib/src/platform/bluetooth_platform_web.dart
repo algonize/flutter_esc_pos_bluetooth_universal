@@ -12,6 +12,7 @@ import '../models/bluetooth_printer.dart';
 import '../models/bluetooth_write_options.dart';
 import '../transport/ble_transport.dart';
 import '../transport/printer_transport.dart';
+import '../utils/write_pacer.dart';
 import '../transport/web_serial_bindings.dart';
 import '../transport/web_serial_transport.dart';
 import 'bluetooth_platform.dart';
@@ -199,6 +200,7 @@ class WebBluetoothPlatform implements BluetoothPlatform {
     required License license,
     required BluetoothWriteOptions options,
     required List<BlePrinterService> bleServices,
+    WritePacer? pacer,
   }) {
     return switch (printer.type) {
       BluetoothPrinterType.ble => BleTransport(
@@ -206,11 +208,13 @@ class WebBluetoothPlatform implements BluetoothPlatform {
         license: license,
         options: options,
         services: bleServices,
+        pacer: pacer,
       ),
       BluetoothPrinterType.classic => WebSerialTransport(
         printer,
         _ports[printer.id],
         options: options,
+        pacer: pacer,
       ),
     };
   }

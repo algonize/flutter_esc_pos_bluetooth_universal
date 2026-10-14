@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' show License;
 import 'package:flutter_esc_pos_utils/flutter_esc_pos_utils.dart';
@@ -16,6 +17,7 @@ import 'platform/bluetooth_platform_io.dart'
 import 'printer_bluetooth_interface.dart';
 import 'raster/widget_raster.dart';
 import 'transport/printer_transport.dart';
+import 'utils/write_pacer.dart';
 
 /// Finds, connects to and prints on ESC/POS Bluetooth printers, BLE and
 /// Classic, with the same code on Android, iOS, macOS, Windows, Linux and web.
@@ -181,6 +183,8 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
       license: _license,
       options: _writeOptions,
       bleServices: _bleServices,
+      // Paced to the paper width: a millimetre of raster is widthPx bytes.
+      pacer: WritePacer.of(_writeOptions.pacing, widthDots: _paperSize.widthPx.toInt()),
     );
     try {
       await transport.connect(timeout ?? _timeout);
@@ -234,7 +238,19 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
         final result = await connect();
         if (result != PosPrintResult.success) return result;
       }
+      final clock = Stopwatch()..start();
       await _transport!.write(data);
+      clock.stop();
+      if (kDebugMode) {
+        final ms = clock.elapsedMilliseconds;
+        final rate = ms == 0 ? 0 : data.length / ms; // bytes per ms == kB/s
+        final dark = WritePacer.dotsIn(data, 0, data.length) / (data.length * 8) * 100;
+        debugPrint(
+          'flutter_esc_pos_bluetooth_universal: sent ${data.length} B in $ms ms '
+          '(${rate.toStringAsFixed(1)} kB/s, ${dark.toStringAsFixed(1)}% dark, '
+          'pacing ${_writeOptions.pacing ?? 'off'}, ${_paperSize.widthPx.toInt()} dots)',
+        );
+      }
       return PosPrintResult.success;
     } on PrinterTransportException catch (e) {
       _lastError = e.cause ?? e;

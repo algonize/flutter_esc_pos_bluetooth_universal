@@ -1,13 +1,16 @@
 import 'package:flutter/foundation.dart';
 
+import 'write_pacing.dart';
+
 /// How print data is split and paced on the way to the printer.
 ///
-/// The defaults suit most printers. Tune them only if long tickets or images
-/// come out cut short or garbled: a smaller chunk or a short delay gives slow
-/// printers time to empty their buffer.
+/// The defaults suit most printers. Data is paced to the printer's print speed
+/// (see [pacing]), which is what keeps long tickets from coming out garbled;
+/// the chunk sizes and delays only shape how the bytes are handed to the link.
 @immutable
 class BluetoothWriteOptions {
   const BluetoothWriteOptions({
+    this.pacing = const WritePacing(),
     this.bleChunkSize,
     this.bleChunkDelay = Duration.zero,
     this.preferWriteWithoutResponse = true,
@@ -22,6 +25,16 @@ class BluetoothWriteOptions {
        assert(webBleBatchSize >= 1),
        assert(classicChunkSize > 0),
        assert(webSerialChunkSize > 0);
+
+  /// Feeds data to the printer no faster than it prints, so its input buffer
+  /// never overflows on a long ticket. Null turns pacing off.
+  ///
+  /// This applies to every link. Bluetooth has no flow control that reaches
+  /// the print engine: a BLE write without response is never refused, and
+  /// Classic printers take data before checking for room, so a long receipt
+  /// sent at link speed overruns the buffer and its bottom part prints as
+  /// garbage. See [WritePacing] for the default and how to tune it.
+  final WritePacing? pacing;
 
   /// Bytes per BLE write. When null (recommended) it follows the connection:
   /// - Android, iOS, macOS, Windows, Linux: the negotiated MTU minus 3.

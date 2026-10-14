@@ -24,6 +24,7 @@ It supports both kinds of Bluetooth printer:
 - **Fast and safe writes.**
   - BLE chunks follow the negotiated MTU and step down automatically if a write is rejected.
   - Classic and Web Serial stream in large slices.
+  - Data is paced to the printer's print speed, so a long receipt can't overrun the printer's buffer and come out garbled at the bottom.
   - A print only reports success once the data has actually left: on the web, every BLE chunk is confirmed by the printer and Web Serial waits until the browser has sent every byte.
   - All of this can be tuned with `BluetoothWriteOptions`.
 - **Widget printing.** `printWidget` renders any Flutter widget (logos, QR codes, any script) into the same bytes as the network package prints, built straight from the captured pixels, so even long receipts encode in a few milliseconds, in the browser too.
@@ -196,12 +197,13 @@ On the web, a saved **BLE** printer must be chosen again once per page load (`re
 
 ## ⚙️ Tuning writes
 
-The defaults suit most printers. If long tickets or images come out cut short or garbled, slow down a little:
+The defaults suit most printers. Data is paced to the printer's print speed (`pacing`, default 40 mm/s on text and 5 mm/s on solid black, after a 2 kB burst): a thermal printer buffers only a few kilobytes of unprinted data, Bluetooth delivers faster than a 58 mm head prints, and nothing holds the link back, so without pacing a long receipt overruns the buffer and prints random characters from there on. Dense graphics (QR codes, barcodes) print several times slower than text, so bytes are charged by the dots they print and the sender slows down through them. The byte rate follows from the paper size (a millimetre of raster is the paper width in dots, in bytes). Raise the speeds for a faster printer you have tested, lower `darkMmPerSecond` if a receipt still breaks around its QR code or barcode, or set `pacing: null` to send at link speed. The chunk sizes and delays only shape how bytes are handed to the link:
 
 ```dart
 PrinterBluetoothManager(
   license: License.nonprofit,
   writeOptions: const BluetoothWriteOptions(
+    pacing: WritePacing(mmPerSecond: 40, darkMmPerSecond: 5, burstBytes: 2048), // default; null turns it off
     bleChunkSize: 100,                                 // default: MTU - 3 (182 on web)
     bleChunkDelay: Duration(milliseconds: 5),
     preferWriteWithoutResponse: true,
@@ -280,7 +282,8 @@ The platform is picked at compile time by conditional import, like the network p
 | `noWritableCharacteristic` | Add the printer's service and characteristic through `bleServices`. |
 | BLE print reports success but nothing prints | The data went to a characteristic that isn't wired to the print engine. Put the right pair first in `bleServices`, or clear the saved `serviceUuid` / `characteristicUuid` so it's detected again. |
 | macOS: Classic printer times out | Use the printer's BLE entry from the scan. Dual-mode printers are routed there automatically. |
-| Ticket cut short or garbled | Lower `bleChunkSize` / `classicChunkSize` or add a small delay. |
+| Long ticket garbled, often right after a QR code or barcode | The printer's buffer overflowed while it printed dense graphics slowly. Pacing (on by default) prevents it; if you raised `pacing`'s speeds or turned it off, go back to the default, or lower `darkMmPerSecond` for a slow printer. |
+| Ticket cut short | Lower `bleChunkSize` / `classicChunkSize` or add a small delay. |
 | `printerAccessRequired` on web | Call `requestPrinter()` again from a button. The browser forgot the device. |
 | Web on macOS: `unsupported` when connecting a BLE printer | Chrome lists a dual-mode printer paired in System Settings under its Classic address, and can't open BLE on it. Choose it as a Classic printer (Web Serial) instead. |
 | Widget prints nothing, text tickets print | Check the paper size. A 58 mm printer (384 dots, such as the Deli ES421) can't print an image laid out for 80 mm. |

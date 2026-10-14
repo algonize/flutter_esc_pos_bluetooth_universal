@@ -8,6 +8,7 @@ import '../models/bluetooth_printer.dart';
 import '../models/bluetooth_write_options.dart';
 import 'ble_transport.dart';
 import 'classic_transport.dart';
+import '../utils/write_pacer.dart';
 import 'printer_transport.dart';
 
 /// macOS: Classic printers, reached through their BLE side when they have one.
@@ -24,12 +25,14 @@ class MacClassicTransport implements PrinterTransport {
     required this._license,
     required this._options,
     required this._services,
+    this._pacer,
   });
 
   final BluetoothPrinter _printer;
   final License _license;
   final BluetoothWriteOptions _options;
   final List<BlePrinterService> _services;
+  final WritePacer? _pacer;
 
   /// How long to look for the printer's BLE side. Printers advertise several
   /// times a second, so a few seconds is plenty.
@@ -59,6 +62,7 @@ class MacClassicTransport implements PrinterTransport {
         license: _license,
         options: _options,
         services: _services,
+        pacer: _pacer,
       );
       try {
         await ble.connect(timeout);
@@ -69,7 +73,7 @@ class MacClassicTransport implements PrinterTransport {
       }
     }
 
-    final classic = ClassicTransport(_printer, options: _options);
+    final classic = ClassicTransport(_printer, options: _options, pacer: _pacer);
     try {
       await classic.connect(timeout);
       _active = classic;

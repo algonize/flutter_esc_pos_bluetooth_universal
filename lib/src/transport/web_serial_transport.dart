@@ -5,15 +5,20 @@ import 'dart:typed_data';
 import '../enums.dart';
 import '../models/bluetooth_printer.dart';
 import '../models/bluetooth_write_options.dart';
+import '../utils/write_pacer.dart';
 import 'printer_transport.dart';
 import 'web_serial_bindings.dart';
 
 /// Bluetooth Classic printers in Chromium browsers, through Web Serial over
 /// RFCOMM. Web only.
 class WebSerialTransport implements PrinterTransport {
-  WebSerialTransport(this._printer, this._port, {required this._options});
+  WebSerialTransport(this._printer, this._port, {required this._options, this._pacer});
 
   final BluetoothPrinter _printer;
+
+  /// Keeps the data at the printer's print speed, so a long ticket does not
+  /// overrun the printer's buffer (see `WritePacing`).
+  final WritePacer? _pacer;
 
   /// The port granted to this page, or null when the page has to ask again.
   final SerialPort? _port;
@@ -74,6 +79,7 @@ class WebSerialTransport implements PrinterTransport {
       final size = _options.webSerialChunkSize;
       for (var offset = 0; offset < data.length; offset += size) {
         final end = offset + size < data.length ? offset + size : data.length;
+        await _pacer?.waitFor(data, offset, end);
         await writer.ready.toDart;
         await writer.write(Uint8List.fromList(data.sublist(offset, end)).toJS).toDart;
         if (_options.webSerialChunkDelay > Duration.zero) {
