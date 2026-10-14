@@ -30,15 +30,20 @@ Future<BluetoothAdapterState> settledAdapterState({
   }
 }
 
-/// Whether print data goes out with write without response on [characteristic].
+/// Whether every print chunk goes out with write without response on
+/// [characteristic].
 ///
 /// Native platforms use it when [preferWithoutResponse] allows, as they only
 /// report such a write once the radio can take it. Browsers don't: Chrome
 /// resolves a write without response straight away, and on macOS the writes
 /// that don't fit CoreBluetooth's queue are dropped without an error, so a
-/// ticket can vanish while every write "succeeds". So on the web ([isWeb])
-/// every chunk is written with response whenever the printer allows it, and
-/// each one is confirmed by the printer.
+/// ticket can vanish while every write "succeeds".
+///
+/// So on the web ([isWeb]) this returns true only for a printer that accepts
+/// *nothing but* writes without response. When it accepts writes with response
+/// too, the transport instead batches them (see [BleTransport.write]), which is
+/// safe and faster than confirming every chunk, so this returns false to keep
+/// that path out of the plain write loop.
 bool bleWritesWithoutResponse(
   BleCharacteristicInfo characteristic, {
   required bool preferWithoutResponse,
@@ -80,6 +85,11 @@ class BleTransport implements PrinterTransport {
   BluetoothCharacteristic? _characteristic;
   bool _withoutResponse = false;
   bool _canWriteWithResponse = false;
+
+  /// Web only: send chunks in batches, acknowledging one every
+  /// [BluetoothWriteOptions.webBleBatchSize]. Set when the printer accepts both
+  /// write with and without response (see [write]).
+  bool _webBatched = false;
   int _chunkSize = minBleChunk;
 
   /// How long to let queued writes drain when the printer only accepts write
@@ -146,6 +156,13 @@ class BleTransport implements PrinterTransport {
         isWeb: kIsWeb,
       );
       _canWriteWithResponse = chosen.canWrite;
+      // On the web a printer that takes both kinds of write is driven in
+      // batches: fast writes without response, with an acknowledged one every
+      // few chunks to keep Chrome's queue from overflowing (see [write]).
+      _webBatched = kIsWeb && chosen.canWrite && chosen.canWriteWithoutResponse;
+      // Batched web writes (_withoutResponse is false there) want the larger
+      // 182-byte chunk, not the 20-byte one used for a printer that only takes
+      // writes without response.
       _chunkSize =
           _options.bleChunkSize ??
           initialBleChunk(mtu: _device.mtuNow, isWeb: kIsWeb, withoutResponse: _withoutResponse);
@@ -166,6 +183,8 @@ class BleTransport implements PrinterTransport {
     if (characteristic == null || !_device.isConnected) {
       throw const PrinterTransportException(PosPrintResult.printerNotConnected);
     }
+
+    if (_webBatched) return _writeWebBatched(characteristic, data);
 
     // A write without response only queues the bytes: the operating system
     // reports success before they leave the radio, and disconnecting right
@@ -204,6 +223,52 @@ class BleTransport implements PrinterTransport {
     }
     // Nothing was acknowledged: give the queue time to reach the printer.
     if (_withoutResponse && !acknowledgeLast) await Future<void>.delayed(_drainDelay);
+  }
+
+  /// The web write path for a printer that accepts both kinds of write.
+  ///
+  /// Chrome resolves a write without response before the bytes leave, and gives
+  /// no signal for when the radio can take the next one. On macOS its queue
+  /// silently drops writes once it overflows, so sending a whole ticket that way
+  /// loses chunks even though every write "succeeds". Confirming every chunk is
+  /// safe but halves the speed, because each one costs a round trip.
+  ///
+  /// So chunks go out without response in runs of [BluetoothWriteOptions.
+  /// webBleBatchSize], then one with response. BLE writes are ordered, and a
+  /// write with response drains the queue before it returns, so this bounds the
+  /// queue to the batch size (no overflow, no loss) while paying for a round
+  /// trip only once per batch — about twice as fast as confirming every chunk,
+  /// measured on a Deli ES421. The last chunk is always confirmed, so the whole
+  /// ticket is known to have arrived before the link closes.
+  Future<void> _writeWebBatched(BluetoothCharacteristic characteristic, List<int> data) async {
+    final batchSize = _options.webBleBatchSize;
+    var unconfirmed = 0;
+    var offset = 0;
+    while (offset < data.length) {
+      final end = offset + _chunkSize < data.length ? offset + _chunkSize : data.length;
+      final isLast = end == data.length;
+      // Confirm this chunk when the batch is full, or it is the last one.
+      final confirm = isLast || unconfirmed >= batchSize;
+      try {
+        await characteristic.write(data.sublist(offset, end), withoutResponse: !confirm);
+      } catch (e) {
+        if (_isLinkLost(e)) {
+          throw PrinterTransportException(PosPrintResult.printerNotConnected, e);
+        }
+        // A rejected write is usually too large for the link: retry the same
+        // bytes smaller, unless the app fixed the size itself.
+        if (_options.bleChunkSize == null && _chunkSize > minBleChunk) {
+          _chunkSize = nextSmallerBleChunk(_chunkSize);
+          continue;
+        }
+        throw PrinterTransportException(PosPrintResult.writeFailed, e);
+      }
+      offset = end;
+      unconfirmed = confirm ? 0 : unconfirmed + 1;
+      if (_options.bleChunkDelay > Duration.zero && !isLast) {
+        await Future<void>.delayed(_options.bleChunkDelay);
+      }
+    }
   }
 
   /// Whether a failed write means the link is gone. flutter_blue_plus_web

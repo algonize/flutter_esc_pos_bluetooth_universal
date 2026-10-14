@@ -212,7 +212,7 @@ PrinterBluetoothManager(
 );
 ```
 
-On the web, every BLE chunk is written with response, so the printer confirms each one. Browsers report a write without response as done straight away, and Chrome on macOS drops the ones the system can't queue without any error, which made tickets vanish while the print "succeeded". Chunks start at 182 bytes. Browsers don't expose the MTU, but a longer write with response is sent as a long write or rejected, never cut short, and a rejected size steps down. A printer that only takes write without response gets 20-byte chunks, 20 ms apart.
+On the web, BLE chunks go out in batches: a few written without response (fast), then one with response, which the printer confirms. Browsers report a write without response as done straight away and give no flow control, and Chrome on macOS silently drops the ones its queue can't hold, which made tickets vanish while the print "succeeded". Confirming one chunk every `webBleBatchSize` (default 4) keeps the queue shallow so nothing is dropped, while staying about twice as fast as confirming every chunk (measured ~5.5 vs ~2.9 kB/s on a Deli ES421). Chunks are 182 bytes — on macOS, larger BLE writes are fragmented and come out *slower*, so raising `bleChunkSize` there does not help. Raise `webBleBatchSize` for a bit more speed on a printer you've tested, or set it to 1 to confirm every chunk. A printer that only accepts writes without response gets 20-byte chunks, 20 ms apart; one that only accepts writes with response confirms every chunk.
 
 If your BLE printer uses UUIDs not in `defaultBlePrinterServices`, add them:
 

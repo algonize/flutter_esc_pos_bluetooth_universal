@@ -11,6 +11,7 @@ class BluetoothWriteOptions {
     this.bleChunkSize,
     this.bleChunkDelay = Duration.zero,
     this.preferWriteWithoutResponse = true,
+    this.webBleBatchSize = 4,
     this.classicChunkSize = 4096,
     this.classicChunkDelay = const Duration(milliseconds: 10),
     this.classicSecureConnection = true,
@@ -18,6 +19,7 @@ class BluetoothWriteOptions {
     this.webSerialChunkDelay = const Duration(milliseconds: 10),
     this.webSerialBaudRate = 9600,
   }) : assert(bleChunkSize == null || (bleChunkSize >= 20 && bleChunkSize <= 512)),
+       assert(webBleBatchSize >= 1),
        assert(classicChunkSize > 0),
        assert(webSerialChunkSize > 0);
 
@@ -45,10 +47,20 @@ class BluetoothWriteOptions {
   /// known to have arrived before the link is closed.
   ///
   /// Ignored on the web when the printer accepts write with response: there
-  /// every chunk is confirmed by the printer, because browsers report a write
-  /// without response as done at once, and Chrome on macOS drops the ones that
-  /// don't fit the system's queue without an error.
+  /// writes go out in batches (see [webBleBatchSize]), because browsers report a
+  /// write without response as done at once, and Chrome on macOS drops the ones
+  /// that don't fit the system's queue without an error.
   final bool preferWriteWithoutResponse;
+
+  /// Web BLE only: how many chunks are written without response in a row before
+  /// one is written with response, which the printer confirms. Browsers give no
+  /// flow control for writes without response, and Chrome on macOS silently
+  /// drops them once its queue overflows, so this acknowledged write every
+  /// [webBleBatchSize] chunks keeps the queue shallow while staying about twice
+  /// as fast as confirming every chunk. Only used when the printer accepts both
+  /// kinds of write. Raise it for more speed on a printer you've tested, lower
+  /// it (1 confirms every chunk) if a receipt ever comes out short.
+  final int webBleBatchSize;
 
   /// Bytes per write on Bluetooth Classic (native platforms).
   final int classicChunkSize;

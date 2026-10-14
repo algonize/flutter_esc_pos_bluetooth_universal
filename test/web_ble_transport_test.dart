@@ -22,13 +22,17 @@ final _services = StreamController<BmDiscoverServicesResult>.broadcast();
 final _written = StreamController<BmCharacteristicData>.broadcast();
 
 /// Stands in for flutter_blue_plus_web, with a printer that has a single
-/// 18F0/2AF1 characteristic, which always takes write without response. Like
-/// Chrome it rejects a write with response the link can't carry, and fails
-/// writes once the link has dropped.
+/// 18F0/2AF1 characteristic. Like Chrome it rejects a write with response the
+/// link can't carry, and fails writes once the link has dropped.
 final class _FakeWebBluetooth extends FlutterBluePlusPlatform {
-  _FakeWebBluetooth({this.canWrite = true, this.longestWrite = 512});
+  _FakeWebBluetooth({
+    this.canWrite = true,
+    this.canWriteWithoutResponse = true,
+    this.longestWrite = 512,
+  });
 
   final bool canWrite;
+  final bool canWriteWithoutResponse;
 
   /// The longest write with response the printer accepts.
   final int longestWrite;
@@ -91,7 +95,7 @@ final class _FakeWebBluetooth extends FlutterBluePlusPlatform {
                 properties: BmCharacteristicProperties(
                   broadcast: false,
                   read: false,
-                  writeWithoutResponse: true,
+                  writeWithoutResponse: canWriteWithoutResponse,
                   write: canWrite,
                   notify: false,
                   indicate: false,
@@ -150,23 +154,80 @@ final class _FakeWebBluetooth extends FlutterBluePlusPlatform {
   );
 }
 
-Future<BleTransport> _connected(_FakeWebBluetooth fake) async {
+Future<BleTransport> _connected(
+  _FakeWebBluetooth fake, {
+  BluetoothWriteOptions options = const BluetoothWriteOptions(),
+}) async {
   FlutterBluePlusPlatform.instance = fake;
   final transport = BleTransport(
     const BluetoothPrinter(id: _id, type: BluetoothPrinterType.ble),
     license: License.nonprofit,
-    options: const BluetoothWriteOptions(),
+    options: options,
     services: defaultBlePrinterServices,
   );
   await transport.connect(const Duration(seconds: 5));
   return transport;
 }
 
+/// The size of each write, and whether it was confirmed (write with response),
+/// as the printer saw them.
+String _pattern(_FakeWebBluetooth fake) =>
+    fake.writes.map((w) => '${w.value.length}${w.withResponse ? 'R' : 'n'}').join(' ');
+
+/// The longest run of consecutive writes without response.
+int _longestUnconfirmedRun(_FakeWebBluetooth fake) {
+  var longest = 0;
+  var run = 0;
+  for (final w in fake.writes) {
+    if (w.withResponse) {
+      run = 0;
+    } else {
+      longest = ++run > longest ? run : longest;
+    }
+  }
+  return longest;
+}
+
 List<int> _ticket(int length) => List<int>.generate(length, (i) => i % 256);
 
 void main() {
-  test('every chunk is confirmed by the printer, even when it allows no-response writes', () async {
+  test('batches web writes: a confirmed one every few chunks, the last confirmed', () async {
     final fake = _FakeWebBluetooth();
+    final transport = await _connected(fake);
+    final ticket = _ticket(182 * 6); // six 182-byte chunks
+    await transport.write(ticket);
+    await transport.disconnect();
+
+    // Default batch size 4: four without response, then one with, repeating,
+    // and the last chunk always with response.
+    expect(_pattern(fake), '182n 182n 182n 182n 182R 182R');
+    expect(fake.writes.last.withResponse, isTrue);
+    expect(_longestUnconfirmedRun(fake), lessThanOrEqualTo(4));
+    expect(fake.received, ticket); // nothing lost
+  });
+
+  test('keeps no more than batchSize writes unconfirmed, so the queue cannot overflow', () async {
+    for (final batchSize in [1, 2, 8]) {
+      final fake = _FakeWebBluetooth();
+      final transport = await _connected(
+        fake,
+        options: BluetoothWriteOptions(webBleBatchSize: batchSize),
+      );
+      await transport.write(_ticket(182 * 20));
+      await transport.disconnect();
+
+      expect(
+        _longestUnconfirmedRun(fake),
+        lessThanOrEqualTo(batchSize),
+        reason: 'batch $batchSize',
+      );
+      expect(fake.writes.last.withResponse, isTrue, reason: 'batch $batchSize');
+      expect(fake.received, _ticket(182 * 20), reason: 'batch $batchSize');
+    }
+  });
+
+  test('confirms every chunk when the printer only takes writes with response', () async {
+    final fake = _FakeWebBluetooth(canWriteWithoutResponse: false);
     final transport = await _connected(fake);
     final ticket = _ticket(1000);
     await transport.write(ticket);
@@ -178,7 +239,9 @@ void main() {
   });
 
   test('a write too long for the link steps down and resends the same bytes', () async {
-    final fake = _FakeWebBluetooth(longestWrite: 100);
+    // A with-response-only printer keeps every write confirmed, so the step-down
+    // path is exercised cleanly.
+    final fake = _FakeWebBluetooth(canWriteWithoutResponse: false, longestWrite: 100);
     final transport = await _connected(fake);
     final ticket = _ticket(1000);
     await transport.write(ticket);
