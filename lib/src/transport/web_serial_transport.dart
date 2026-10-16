@@ -1,24 +1,20 @@
 import 'dart:async';
 import 'dart:js_interop';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../enums.dart';
 import '../models/bluetooth_printer.dart';
 import '../models/bluetooth_write_options.dart';
-import '../utils/write_pacer.dart';
 import 'printer_transport.dart';
 import 'web_serial_bindings.dart';
 
 /// Bluetooth Classic printers in Chromium browsers, through Web Serial over
 /// RFCOMM. Web only.
 class WebSerialTransport implements PrinterTransport {
-  WebSerialTransport(this._printer, this._port, {required this._options, this._pacer});
+  WebSerialTransport(this._printer, this._port, {required this._options});
 
   final BluetoothPrinter _printer;
-
-  /// Keeps the data at the printer's print speed, so a long ticket does not
-  /// overrun the printer's buffer (see `WritePacing`).
-  final WritePacer? _pacer;
 
   /// The port granted to this page, or null when the page has to ask again.
   final SerialPort? _port;
@@ -61,14 +57,14 @@ class WebSerialTransport implements PrinterTransport {
       // "InvalidStateError": the port is already open in this page.
       if (isDomError(e, 'InvalidStateError')) {
         _open = true;
-        return;
+      } else {
+        throw PrinterTransportException(PosPrintResult.connectionFailed, e);
       }
-      throw PrinterTransportException(PosPrintResult.connectionFailed, e);
     }
   }
 
   @override
-  Future<void> write(List<int> data) async {
+  Future<void> write(List<int> data, {WriteGate? gate}) async {
     // Each print gets a fresh stream: the previous one was closed to drain it.
     final writable = _port?.writable;
     if (!_open || writable == null) {
@@ -76,13 +72,14 @@ class WebSerialTransport implements PrinterTransport {
     }
     final writer = writable.getWriter();
     try {
-      final size = _options.webSerialChunkSize;
-      for (var offset = 0; offset < data.length; offset += size) {
-        final end = offset + size < data.length ? offset + size : data.length;
-        await _pacer?.waitFor(data, offset, end);
+      var offset = 0;
+      while (offset < data.length) {
+        final end = math.min(offset + _options.webSerialChunkSize, data.length);
+        if (gate != null) await gate(data, offset, end);
         await writer.ready.toDart;
         await writer.write(Uint8List.fromList(data.sublist(offset, end)).toJS).toDart;
-        if (_options.webSerialChunkDelay > Duration.zero) {
+        offset = end;
+        if (_options.webSerialChunkDelay > Duration.zero && offset < data.length) {
           await Future<void>.delayed(_options.webSerialChunkDelay);
         }
       }

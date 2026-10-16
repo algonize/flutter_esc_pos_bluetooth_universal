@@ -5,6 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:screenshot/screenshot.dart';
 
+import 'helpers/escpos_decode.dart';
+
 /// A receipt with text, rules and a filled box, so the image has black, white
 /// and anti-aliased grey edges.
 const _receipt = Padding(
@@ -49,7 +51,7 @@ Future<List<int>> _networkPackageTicket(
 }
 
 void main() {
-  testWidgets('prints exactly the bytes the network package prints', (tester) async {
+  testWidgets('prints exactly the dots the network package prints, in fewer bytes', (tester) async {
     late BuildContext context;
     await tester.pumpWidget(
       MaterialApp(
@@ -66,12 +68,28 @@ void main() {
     for (final paperSize in ThermalPosPrinterPageSize.values) {
       final (fast, reference) = (await tester.runAsync(
         () async => (
-          await buildWidgetTicket(context, _receipt, paperSize: paperSize, profile: profile),
+          // Scrubbing off: the reference prints every dot.
+          await buildWidgetTicket(context, _receipt, paperSize: paperSize, profile: profile, scrubRealTime: false),
           await _networkPackageTicket(context, _receipt, paperSize, profile),
         ),
       ))!;
-      expect(fast.length, greaterThan(1000), reason: paperSize.title);
-      expect(fast, reference, reason: paperSize.title);
+      final head = paperSize.widthPx.toInt();
+      expect(fast.bytes.length, greaterThan(1000), reason: paperSize.title);
+      expect(fast.bytes.length, lessThan(reference.length), reason: '${paperSize.title}: trimmed bands');
+      final ours = decodePaper(fast.bytes, headWidth: head);
+      final theirs = decodePaper(reference, headWidth: head);
+      expect(ours.sameAs(theirs), isTrue, reason: '${paperSize.title}: ${ours.diff(theirs)}');
+      // Every band is accounted for, in order, and charged as a full band.
+      expect(fast.bands.length, ours.height ~/ 24);
+      for (final b in fast.bands) {
+        expect(b.fullBytes, 5 + head * 3 + 1);
+        expect(fast.bytes[b.start], 0x1b);
+        expect(fast.bytes[b.start + 1], 0x2a);
+        expect(fast.bytes[b.end - 1], 0x0a);
+      }
+      // The ticket still ends with a feed and a cut.
+      expect(fast.bytes[fast.bytes.length - 3], 0x1d);
+      expect(fast.bytes[fast.bytes.length - 2], 0x56);
     }
   });
 }

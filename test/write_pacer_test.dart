@@ -12,6 +12,19 @@ void main() {
       expect(const WritePacing(mmPerSecond: 0.5, darkMmPerSecond: 0.5).bytesPerSecond(1), 1);
     });
 
+    test('a dense byte costs the ratio of the two speeds', () {
+      expect(const WritePacing(mmPerSecond: 50, darkMmPerSecond: 5).darkRatio, 10);
+      expect(const WritePacing(mmPerSecond: 40, darkMmPerSecond: 40).darkRatio, 1);
+    });
+
+    test('defaults to the speeds that printed a whole receipt cleanly', () {
+      const pacing = WritePacing();
+      expect(pacing.mmPerSecond, 50);
+      expect(pacing.darkMmPerSecond, 5);
+      expect(pacing.burstBytes, 4096);
+      expect(pacing.denseThreshold, 0.25);
+    });
+
     test('is on by default in the write options', () {
       expect(const BluetoothWriteOptions().pacing, isNotNull);
       expect(const BluetoothWriteOptions(pacing: null).pacing, isNull);
@@ -32,7 +45,8 @@ void main() {
           nowMicros: () => async.elapsed.inMicroseconds,
         );
         final sentAt = <int>[];
-        Future<void> send(int bytes) => pacer.wait(bytes).then((_) => sentAt.add(async.elapsed.inMilliseconds));
+        void send(int bytes) =>
+            pacer.wait(bytes).then((_) => sentAt.add(async.elapsed.inMilliseconds));
 
         // 100 bytes of burst, then 1 byte per millisecond.
         send(60);
@@ -96,32 +110,24 @@ void main() {
       });
     });
 
-    test('dark bytes are charged by their dots', () {
-      // 40 mm/s on text, 10 mm/s on black: a solid byte costs 4 bytes.
-      const pacing = WritePacing(mmPerSecond: 40, darkMmPerSecond: 10, burstBytes: 100);
-      expect(pacing.costPerDot, closeTo(3 / 8, 1e-9));
-      expect(WritePacer.dotsIn([0x00, 0xff, 0x0f, 0x81], 0, 4), 8 + 4 + 2);
-      expect(WritePacer.dotsIn([0x00, 0xff, 0x0f, 0x81], 1, 2), 8);
-
+    test('a booked debt holds back the next write, even one that costs nothing', () {
       fakeAsync((async) {
         final pacer = WritePacer(
           bytesPerSecond: 1000,
-          burstBytes: 100,
-          costPerDot: pacing.costPerDot,
+          burstBytes: 0,
           nowMicros: () => async.elapsed.inMicroseconds,
         );
+        pacer.book(150);
         final sentAt = <int>[];
-        // 100 blank bytes: the burst, free. Then 100 black bytes: 400 cost.
-        final blank = List<int>.filled(100, 0);
-        final black = List<int>.filled(100, 0xff);
-        pacer.waitFor(blank, 0, 100).then((_) => sentAt.add(async.elapsed.inMilliseconds));
-        pacer.waitFor(black, 0, 100).then((_) => sentAt.add(async.elapsed.inMilliseconds));
+        pacer.wait(0).then((_) => sentAt.add(async.elapsed.inMilliseconds));
         async.flushMicrotasks();
-        expect(sentAt, [0]);
-        async.elapse(const Duration(milliseconds: 399));
-        expect(sentAt, [0]);
-        async.elapse(const Duration(milliseconds: 1));
-        expect(sentAt, [0, 400]);
+        expect(sentAt, isEmpty);
+        async.elapse(const Duration(milliseconds: 150));
+        expect(sentAt, [150]);
+        // Paid off: nothing more to wait for.
+        pacer.wait(0).then((_) => sentAt.add(async.elapsed.inMilliseconds));
+        async.flushMicrotasks();
+        expect(sentAt, [150, 150]);
       });
     });
 

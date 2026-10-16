@@ -4,9 +4,9 @@ import 'write_pacing.dart';
 
 /// How print data is split and paced on the way to the printer.
 ///
-/// The defaults suit most printers. Data is paced to the printer's print speed
-/// (see [pacing]), which is what keeps long tickets from coming out garbled;
-/// the chunk sizes and delays only shape how the bytes are handed to the link.
+/// The defaults suit most printers. [pacing] is what keeps a long receipt from
+/// coming out garbled or seamed; the chunk sizes and delays only shape how the
+/// bytes are handed to each kind of link.
 @immutable
 class BluetoothWriteOptions {
   const BluetoothWriteOptions({
@@ -15,10 +15,10 @@ class BluetoothWriteOptions {
     this.bleChunkDelay = Duration.zero,
     this.preferWriteWithoutResponse = true,
     this.webBleBatchSize = 4,
-    this.classicChunkSize = 4096,
+    this.classicChunkSize = 1024,
     this.classicChunkDelay = const Duration(milliseconds: 10),
     this.classicSecureConnection = true,
-    this.webSerialChunkSize = 4096,
+    this.webSerialChunkSize = 1024,
     this.webSerialChunkDelay = const Duration(milliseconds: 10),
     this.webSerialBaudRate = 9600,
   }) : assert(bleChunkSize == null || (bleChunkSize >= 20 && bleChunkSize <= 512)),
@@ -27,13 +27,16 @@ class BluetoothWriteOptions {
        assert(webSerialChunkSize > 0);
 
   /// Feeds data to the printer no faster than it prints, so its input buffer
-  /// never overflows on a long ticket. Null turns pacing off.
+  /// never overflows on a long ticket, and no slower than it prints text, so
+  /// it never stops mid-receipt. Null turns pacing off (for a fast printer
+  /// with a large buffer you have tested).
   ///
   /// This applies to every link. Bluetooth has no flow control that reaches
   /// the print engine: a BLE write without response is never refused, and
   /// Classic printers take data before checking for room, so a long receipt
   /// sent at link speed overruns the buffer and its bottom part prints as
-  /// garbage. See [WritePacing] for the default and how to tune it.
+  /// random characters. See [WritePacing] for the defaults and how to tune
+  /// them.
   final WritePacing? pacing;
 
   /// Bytes per BLE write. When null (recommended) it follows the connection:
@@ -44,7 +47,8 @@ class BluetoothWriteOptions {
   /// - Web, on a printer that only takes write without response: 20 bytes,
   ///   as a longer write could be cut short without an error.
   ///
-  /// When a write is rejected, the size is lowered step by step automatically.
+  /// When a write is rejected for its length, the size is lowered step by
+  /// step automatically.
   final int? bleChunkSize;
 
   /// Pause between BLE writes. Usually not needed: writes already wait until
@@ -71,14 +75,15 @@ class BluetoothWriteOptions {
   /// drops them once its queue overflows, so this acknowledged write every
   /// [webBleBatchSize] chunks keeps the queue shallow while staying about twice
   /// as fast as confirming every chunk. Only used when the printer accepts both
-  /// kinds of write. Raise it for more speed on a printer you've tested, lower
-  /// it (1 confirms every chunk) if a receipt ever comes out short.
+  /// kinds of write. Lower it (1 confirms every chunk) if a receipt ever comes
+  /// out short.
   final int webBleBatchSize;
 
-  /// Bytes per write on Bluetooth Classic (native platforms).
+  /// Bytes per write on Bluetooth Classic (native platforms). Small enough
+  /// that pacing feeds the printer smoothly rather than in lumps.
   final int classicChunkSize;
 
-  /// Pause after each Classic write, giving the printer time to empty its buffer.
+  /// Pause after each Classic write.
   final Duration classicChunkDelay;
 
   /// Use an authenticated, encrypted RFCOMM link. Some older printers only

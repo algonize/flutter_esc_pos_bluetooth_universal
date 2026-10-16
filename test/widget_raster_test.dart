@@ -20,7 +20,7 @@ void main() {
     );
     final profile = await CapabilityProfile.load();
 
-    final bytes = await tester.runAsync(
+    final ticket = await tester.runAsync(
       () => buildWidgetTicket(
         context,
         const Column(
@@ -41,7 +41,13 @@ void main() {
     );
 
     expect(tester.takeException(), isNull);
-    expect(bytes, isNotNull);
-    expect(bytes, isNotEmpty);
+    expect(ticket, isNotNull);
+    expect(ticket!.bytes, isNotEmpty);
+    expect(ticket.bands, isNotEmpty);
+    // No initialise command (ESC @): the ticket starts by setting left
+    // alignment, which the trimmed bands need whatever an earlier ticket
+    // left the printer in.
+    expect(ticket.bytes.sublist(0, 3), [0x1b, 0x61, 0x30]);
+    expect(ticket.bands.first.start, greaterThanOrEqualTo(3));
   });
 }

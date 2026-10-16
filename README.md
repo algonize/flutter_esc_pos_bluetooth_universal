@@ -18,17 +18,10 @@ It supports both kinds of Bluetooth printer:
 
 - **One API everywhere.** Android, iOS, macOS, Windows, Linux and Web.
 - **BLE and Classic.** Scanning merges both. Each printer is reached over the right link automatically.
-- **Works with real printers.**
-  - Picks the printer's BLE write characteristic from a table of common printer UUIDs, then falls back to any writable one.
-  - Remembers the choice per printer.
-- **Fast and safe writes.**
-  - BLE chunks follow the negotiated MTU and step down automatically if a write is rejected.
-  - Classic and Web Serial stream in large slices.
-  - Data is paced to the printer's print speed, so a long receipt can't overrun the printer's buffer and come out garbled at the bottom.
-  - A print only reports success once the data has actually left: on the web, every BLE chunk is confirmed by the printer and Web Serial waits until the browser has sent every byte.
-  - All of this can be tuned with `BluetoothWriteOptions`.
-- **Widget printing.** `printWidget` renders any Flutter widget (logos, QR codes, any script) into the same bytes as the network package prints, built straight from the captured pixels, so even long receipts encode in a few milliseconds, in the browser too.
+- **Clean receipts.** No white lines between bands, no random characters on long receipts, no stop-and-start printing (see [How printing works](#-how-printing-works)).
+- **Widget printing.** `printWidget` renders any Flutter widget (logos, QR codes, barcodes, any script) and prints it as one image, the same dots the network package prints.
 - **Raw ESC/POS.** `printTicket` sends bytes from the re-exported `flutter_esc_pos_utils` `Generator`.
+- **Works with real printers.** Picks the printer's BLE write characteristic from a table of common printer UUIDs, falls back to any writable one, and remembers the choice per printer.
 - **Save and reconnect.** `BluetoothPrinter` is plain JSON-serialisable data.
 
 ---
@@ -148,7 +141,16 @@ ElevatedButton(
 )
 ```
 
-### 2. Print raw ESC/POS bytes
+### 2. Print a Flutter widget
+
+```dart
+final result = await manager.printWidget(context, child: const MyReceiptWidget());
+if (!result.isSuccess) debugPrint('${result.msg}: ${manager.lastError}');
+```
+
+The widget is laid out at the paper width, so width-filling layouts such as `Row` + `Expanded` work. `gapMm: 20` leaves blank paper below the receipt for tearing by hand on printers without a cutter.
+
+### 3. Print raw ESC/POS bytes
 
 ```dart
 final generator = Generator(PaperSize.mm80, await CapabilityProfile.load());
@@ -159,23 +161,15 @@ final result = await manager.printTicket([
   ...generator.feed(2),
   ...generator.cut(),
 ]);
-
-if (result != PosPrintResult.success) debugPrint(result.msg);
 ```
 
-`printTicket` connects when needed and disconnects afterwards. To send several tickets over one connection:
+Both print methods connect when needed and disconnect afterwards. To send several tickets over one connection:
 
 ```dart
 await manager.connect();
-await manager.printTicket(ticket1, isDisconnect: false);
-await manager.printTicket(ticket2, isDisconnect: false);
+await manager.printWidget(context, child: customerCopy, isDisconnect: false);
+await manager.printWidget(context, child: cashierCopy, isDisconnect: false);
 await manager.disconnect();
-```
-
-### 3. Print a Flutter widget
-
-```dart
-await manager.printWidget(context, child: const MyReceiptWidget());
 ```
 
 ### 4. Save the printer and reconnect later
@@ -188,33 +182,49 @@ final manager = PrinterBluetoothManager(
   license: License.nonprofit,
   printer: BluetoothPrinter.fromJson(json),
 );
-await manager.printTicket(bytes);
 ```
 
 On the web, a saved **BLE** printer must be chosen again once per page load (`requestPrinter`), because browsers only grant access through their chooser. Saved **Web Serial** printers reconnect without asking, as Chrome remembers the permission.
 
 ---
 
-## ⚙️ Tuning writes
+## 🖨️ How printing works
 
-The defaults suit most printers. Data is paced to the printer's print speed (`pacing`, default 40 mm/s on text and 5 mm/s on solid black, after a 2 kB burst): a thermal printer buffers only a few kilobytes of unprinted data, Bluetooth delivers faster than a 58 mm head prints, and nothing holds the link back, so without pacing a long receipt overruns the buffer and prints random characters from there on. Dense graphics (QR codes, barcodes) print several times slower than text, so bytes are charged by the dots they print and the sender slows down through them. The byte rate follows from the paper size (a millimetre of raster is the paper width in dots, in bytes). Raise the speeds for a faster printer you have tested, lower `darkMmPerSecond` if a receipt still breaks around its QR code or barcode, or set `pacing: null` to send at link speed. The chunk sizes and delays only shape how bytes are handed to the link:
+A widget receipt is captured at one pixel per print-head dot and sent exactly as `flutter_esc_pos_network_universal` sends it: **one image of `ESC *` column bands**, then a feed and a cut. There is no raster command and nothing depends on what the receipt holds, so any logo, QR code or barcode works.
+
+**No white lines.** The bands are bracketed by `ESC 3 0` (zero line spacing) and `ESC 2`, so the line feed after each band moves the paper exactly one band. The bands butt together however long the printer pauses between two of them.
+
+**Every part prints, nothing turns into random characters.** Over Wi-Fi the printer's TCP window slows the sender down, which is why the network package needs no pacing. Bluetooth has nothing like it: a BLE write without response is never refused, and most printers take Classic data before checking for room. So the package keeps its own account of what the printer has left to print (`WritePacing`): **50 mm/s on text**, **5 mm/s on dense bands**, after a **4 kB burst**. A band is dense when a quarter of its bits are set, measured from the actual picture, so a dark logo, a QR code and a barcode all get their time.
+
+**The timing follows the printer.** A printer prints a band only once all of it has arrived. So each band goes out at link speed, and the next one waits for its print time. The printer is never left waiting for a slow band to trickle in, and never handed the text after a graphic while it is still printing that graphic, which a 58 mm printer answered by throwing the text away.
+
+Nothing is read back from the printer while it prints, and the ticket never starts with `ESC @` (initialise), which the network package does not send either.
+
+### Tuning
+
+The defaults suit most printers. For one that behaves differently:
 
 ```dart
 PrinterBluetoothManager(
   license: License.nonprofit,
   writeOptions: const BluetoothWriteOptions(
-    pacing: WritePacing(mmPerSecond: 40, darkMmPerSecond: 5, burstBytes: 2048), // default; null turns it off
-    bleChunkSize: 100,                                 // default: MTU - 3 (182 on web)
-    bleChunkDelay: Duration(milliseconds: 5),
-    preferWriteWithoutResponse: true,
-    classicChunkSize: 1024,
-    classicChunkDelay: Duration(milliseconds: 20),
-    classicSecureConnection: true,                     // false for some older printers
+    pacing: WritePacing(
+      mmPerSecond: 50,                                 // text speed
+      darkMmPerSecond: 5,                              // barcode / QR / logo speed
+      burstBytes: 4096,                                // sent at once before pacing starts
+    ),                                                 // null turns pacing off
   ),
 );
 ```
 
-On the web, BLE chunks go out in batches: a few written without response (fast), then one with response, which the printer confirms. Browsers report a write without response as done straight away and give no flow control, and Chrome on macOS silently drops the ones its queue can't hold, which made tickets vanish while the print "succeeded". Confirming one chunk every `webBleBatchSize` (default 4) keeps the queue shallow so nothing is dropped, while staying about twice as fast as confirming every chunk (measured ~5.5 vs ~2.9 kB/s on a Deli ES421). Chunks are 182 bytes — on macOS, larger BLE writes are fragmented and come out *slower*, so raising `bleChunkSize` there does not help. Raise `webBleBatchSize` for a bit more speed on a printer you've tested, or set it to 1 to confirm every chunk. A printer that only accepts writes without response gets 20-byte chunks, 20 ms apart; one that only accepts writes with response confirms every chunk.
+| You see | Change |
+|---|---|
+| Random characters from some point of a long receipt on | Lower `mmPerSecond` (30 is safe for slow 58 mm printers). |
+| Lines missing after a logo, QR code or barcode | Lower `darkMmPerSecond`. |
+| Thin white lines through the text | Raise `mmPerSecond` a little towards the printer's speed. |
+| Everything prints, but slowly | Raise `mmPerSecond`, then `darkMmPerSecond`, a step at a time. |
+
+The chunk sizes and delays in `BluetoothWriteOptions` only shape how bytes are handed to each link, and rarely need changing.
 
 If your BLE printer uses UUIDs not in `defaultBlePrinterServices`, add them:
 
@@ -246,9 +256,10 @@ PrinterBluetoothManager(
 | `selectPrinter(printer)` / `selectedPrinter` | The printer to use |
 | `connect({timeout})` / `disconnect()` / `isConnected` | Connection control |
 | `connectionStatus` / `status` | `disconnected`, `connecting`, `connected`, `disconnecting` |
+| `printWidget(context, {child, isDisconnect, gapMm})` | Renders and prints a widget |
 | `printTicket(bytes, {isDisconnect})` | Sends raw ESC/POS bytes |
-| `printWidget(context, {child, isDisconnect})` | Renders and prints a widget |
-| `lastError` | The underlying error behind the last failed connect or print, for logs and bug reports |
+| `lastError` | The underlying error behind the last failed connect or print |
+| `lastPrint` | How the last ticket was sent (`PrintOutcome`: bytes, time, rate) |
 | `dispose()` | Disconnects and releases the manager |
 
 Every action returns a `PosPrintResult` with a readable `msg`. The names shared with the network package (`success`, `timeout`, `ticketEmpty`, `printInProgress`, …) mean the same thing. Bluetooth adds `bluetoothUnavailable`, `permissionDenied`, `unsupported`, `userCancelled`, `printerAccessRequired`, `noWritableCharacteristic`, `connectionFailed` and `writeFailed`.
@@ -260,6 +271,9 @@ Every action returns a `PosPrintResult` with a readable `msg`. The names shared 
 ```
 PrinterBluetoothManager  (public API)
    │
+   ├── widget → one image of ESC * column bands → feed → cut   (as the network package)
+   ├── PrintSession: sends each band at once, then waits for its print time
+   │
    ├── Native (dart:io)
    │     ├── BLE      → flutter_blue_plus           (Android · iOS · macOS · Windows · Linux)
    │     └── Classic  → flutter_classic_bluetooth   (Android · Windows · macOS · Linux)
@@ -269,7 +283,7 @@ PrinterBluetoothManager  (public API)
          └── Classic  → Web Serial over Bluetooth RFCOMM
 ```
 
-The platform is picked at compile time by conditional import, like the network package.
+The platform is picked at compile time by conditional import, like the network package. Each link makes sure the whole ticket has left before it closes: BLE sends the last chunk with response, Web BLE confirms a chunk every few (`webBleBatchSize`), and Web Serial waits until the browser has sent every byte.
 
 ---
 
@@ -282,7 +296,8 @@ The platform is picked at compile time by conditional import, like the network p
 | `noWritableCharacteristic` | Add the printer's service and characteristic through `bleServices`. |
 | BLE print reports success but nothing prints | The data went to a characteristic that isn't wired to the print engine. Put the right pair first in `bleServices`, or clear the saved `serviceUuid` / `characteristicUuid` so it's detected again. |
 | macOS: Classic printer times out | Use the printer's BLE entry from the scan. Dual-mode printers are routed there automatically. |
-| Long ticket garbled, often right after a QR code or barcode | The printer's buffer overflowed while it printed dense graphics slowly. Pacing (on by default) prevents it; if you raised `pacing`'s speeds or turned it off, go back to the default, or lower `darkMmPerSecond` for a slow printer. |
+| Random characters, white lines, or a broken barcode | See [Tuning](#tuning). |
+| Copies printed in a row run into each other | The printer has no cutter and ignores the cut. Print with `gapMm: 20`. |
 | Ticket cut short | Lower `bleChunkSize` / `classicChunkSize` or add a small delay. |
 | `printerAccessRequired` on web | Call `requestPrinter()` again from a button. The browser forgot the device. |
 | Web on macOS: `unsupported` when connecting a BLE printer | Chrome lists a dual-mode printer paired in System Settings under its Classic address, and can't open BLE on it. Choose it as a Classic printer (Web Serial) instead. |

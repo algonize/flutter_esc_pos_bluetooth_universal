@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -7,20 +8,43 @@ import 'package:image/image.dart' as img;
 import 'package:screenshot/screenshot.dart';
 
 import '../enums.dart';
+import '../models/print_ticket.dart';
 import 'column_image.dart';
 
-/// Renders [child] off screen and turns it into an ESC/POS ticket: one image,
-/// then a short feed and a cut. The bytes are the same as
-/// flutter_esc_pos_network_universal prints, so receipts look identical on
-/// both.
-Future<List<int>> buildWidgetTicket(
+/// `ESC a 0`: left alignment. The bands are trimmed on the right, so they
+/// must print left-aligned whatever alignment an earlier ticket left the
+/// printer in (a centred band would shift by its own trimmed width). Then
+/// `FS .`: cancel Kanji mode, as `Generator` sends before every style.
+///
+/// Deliberately no `ESC @` (initialise): it is not needed, the network package
+/// does not send it, and a 58 mm Bluetooth printer that was sent it hung on
+/// its error light.
+const List<int> _ticketPrefix = [0x1b, 0x61, 0x30, 0x1c, 0x2e];
+
+/// Renders [child] off screen and turns it into an ESC/POS ticket the way
+/// `flutter_esc_pos_network_universal` does: one image as `ESC *` column
+/// bands, then a short feed and a cut. Receipts print the same dots on both.
+///
+/// [gapMm] millimetres of blank paper are added below the receipt, inside the
+/// image, so they come out on every printer. Most Bluetooth receipt printers
+/// have no cutter and ignore the cut command, and copies printed in a row run
+/// into each other; a gap of 15 to 25 mm leaves room to tear them apart by
+/// hand. Blank paper costs almost nothing to send: a blank band is 9 bytes.
+Future<PrintTicket> buildWidgetTicket(
   BuildContext context,
   Widget child, {
   required ThermalPosPrinterPageSize paperSize,
   required CapabilityProfile profile,
+  double gapMm = 0,
+  bool scrubRealTime = true,
 }) async {
+  assert(gapMm >= 0);
+  // 8 dots per millimetre, captured at one pixel per dot.
+  final receipt = gapMm > 0
+      ? Padding(padding: EdgeInsets.only(bottom: gapMm * 8), child: child)
+      : child;
   final image = await ScreenshotController().longWidgetToUiImage(
-    InheritedTheme.captureAll(context, Material(color: Colors.white, child: child)),
+    InheritedTheme.captureAll(context, Material(color: Colors.white, child: receipt)),
     delay: const Duration(milliseconds: kIsWeb ? 500 : 200),
     context: context,
     // Without a width limit the widget is laid out at infinite width, and any
@@ -34,33 +58,39 @@ Future<List<int>> buildWidgetTicket(
   try {
     // Raw pixels rather than a PNG: encoding and decoding one again took most
     // of the time, above all in a browser. They are always 8 bits per channel,
-    // even where the screen captures 16 (wide colour on real iOS devices).
+    // even where the screen captures 16 (wide colour on real iOS devices),
+    // which is what garbled receipts printed from a PNG on iPhones.
     pixels = await image.toByteData(format: ui.ImageByteFormat.rawRgba);
   } finally {
     image.dispose();
   }
-  if (pixels == null) return const [];
+  if (pixels == null) return PrintTicket(Uint8List(0));
   return encodeTicketPixels(
     pixels.buffer.asUint8List(pixels.offsetInBytes, pixels.lengthInBytes),
     width,
     height,
     paperSize: paperSize,
     profile: profile,
+    scrubRealTime: scrubRealTime,
   );
 }
 
-/// Encodes 8-bit RGBA pixels into an ESC/POS ticket: the image as ESC * bands
-/// (what `Generator.image` prints), a feed and a cut. Fast enough to run on
-/// the UI thread, even in a browser.
+/// Encodes 8-bit RGBA pixels into an ESC/POS ticket: left alignment, the
+/// image as column bands, a feed and a cut. Fast enough to run on the UI
+/// thread, even in a browser.
+///
+/// [scrubRealTime] drops the single dots that would spell a real-time command
+/// in the image data (see `columnImageBands`).
 @visibleForTesting
-List<int> encodeTicketPixels(
+PrintTicket encodeTicketPixels(
   Uint8List rgba,
   int width,
   int height, {
   required ThermalPosPrinterPageSize paperSize,
   required CapabilityProfile profile,
+  bool scrubRealTime = true,
 }) {
-  if (width == 0 || height == 0) return const [];
+  if (width == 0 || height == 0) return PrintTicket(Uint8List(0));
 
   // Keep within the print head; wider bitmaps desync the image command. The
   // widget is laid out at most this wide, so this is only a safeguard.
@@ -81,12 +111,23 @@ List<int> encodeTicketPixels(
     height = resized.height;
   }
 
+  // A picture narrower than the head is padded to where centring would put it.
+  final image = columnImageBands(
+    rgba,
+    width,
+    height,
+    leftPad: (maxWidth - width) ~/ 2,
+    headWidth: maxWidth,
+    scrubRealTime: scrubRealTime,
+  );
   final generator = Generator(paperSize.toPaperSize, profile);
-  // One image for the whole receipt: images split into pieces leave white seams.
-  return [
-    ...generator.setStyles(const PosStyles(align: PosAlign.center)),
-    ...columnImageBands(rgba, width, height),
-    ...generator.feed(2),
-    ...generator.cut(),
-  ];
+  final bytes = BytesBuilder(copy: false)
+    ..add(_ticketPrefix)
+    ..add(image.bytes)
+    ..add(generator.feed(2))
+    ..add(generator.cut());
+  return PrintTicket(
+    bytes.takeBytes(),
+    bands: [for (final b in image.bands) b.shift(_ticketPrefix.length)],
+  );
 }

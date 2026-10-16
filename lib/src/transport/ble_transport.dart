@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -8,7 +9,6 @@ import '../models/ble_printer_service.dart';
 import '../models/bluetooth_printer.dart';
 import '../models/bluetooth_write_options.dart';
 import '../utils/chunking.dart';
-import '../utils/write_pacer.dart';
 import 'printer_transport.dart';
 
 /// The adapter state once it has settled, waiting up to [timeout].
@@ -76,19 +76,12 @@ class BleTransport implements PrinterTransport {
     required this._license,
     required this._options,
     required this._services,
-    this._pacer,
   });
 
   BluetoothPrinter _printer;
   final License _license;
   final BluetoothWriteOptions _options;
   final List<BlePrinterService> _services;
-
-  /// Keeps the data at the printer's print speed. BLE gives no flow control
-  /// that reaches the print engine: a write without response is never
-  /// refused, and a long ticket sent at link speed overruns the printer's
-  /// buffer, whose overflow prints as garbage.
-  final WritePacer? _pacer;
 
   BluetoothCharacteristic? _characteristic;
   bool _withoutResponse = false;
@@ -186,13 +179,13 @@ class BleTransport implements PrinterTransport {
   }
 
   @override
-  Future<void> write(List<int> data) async {
+  Future<void> write(List<int> data, {WriteGate? gate}) async {
     final characteristic = _characteristic;
     if (characteristic == null || !_device.isConnected) {
       throw const PrinterTransportException(PosPrintResult.printerNotConnected);
     }
 
-    if (_webBatched) return _writeWebBatched(characteristic, data);
+    if (_webBatched) return _writeWebBatched(characteristic, data, gate);
 
     // A write without response only queues the bytes: the operating system
     // reports success before they leave the radio, and disconnecting right
@@ -206,10 +199,11 @@ class BleTransport implements PrinterTransport {
         : (kIsWeb && _withoutResponse ? _webUnacknowledgedPause : Duration.zero);
 
     var offset = 0;
+    var busyRetries = 0;
     while (offset < data.length) {
-      final end = offset + _chunkSize < data.length ? offset + _chunkSize : data.length;
+      final end = math.min(offset + _chunkSize, data.length);
       final isLast = end == data.length;
-      await _pacer?.waitFor(data, offset, end);
+      if (gate != null) await gate(data, offset, end);
       try {
         await characteristic.write(
           data.sublist(offset, end),
@@ -219,14 +213,23 @@ class BleTransport implements PrinterTransport {
         if (_isLinkLost(e)) {
           throw PrinterTransportException(PosPrintResult.printerNotConnected, e);
         }
-        // A rejected write is usually too large for the link: retry the same
-        // bytes smaller, unless the app fixed the size itself.
-        if (_options.bleChunkSize == null && _chunkSize > minBleChunk) {
+        // The radio has no room yet (macOS and iOS refuse a write without
+        // response rather than queue it): nothing was sent, so wait a moment
+        // and send the same bytes again at the same size.
+        if (_isRadioBusy(e) && busyRetries++ < _maxBusyRetries) {
+          await Future<void>.delayed(_busyRetryPause);
+          continue;
+        }
+        // A write rejected for its length: retry the same bytes smaller,
+        // unless the app fixed the size itself. Browsers give no reason, so
+        // there any other rejection is taken as one.
+        if (_options.bleChunkSize == null && _chunkSize > minBleChunk && (kIsWeb || _isTooLong(e))) {
           _chunkSize = nextSmallerBleChunk(_chunkSize);
           continue;
         }
         throw PrinterTransportException(PosPrintResult.writeFailed, e);
       }
+      busyRetries = 0;
       offset = end;
       if (pause > Duration.zero && !isLast) await Future<void>.delayed(pause);
     }
@@ -246,19 +249,23 @@ class BleTransport implements PrinterTransport {
   /// webBleBatchSize], then one with response. BLE writes are ordered, and a
   /// write with response drains the queue before it returns, so this bounds the
   /// queue to the batch size (no overflow, no loss) while paying for a round
-  /// trip only once per batch — about twice as fast as confirming every chunk,
+  /// trip only once per batch, about twice as fast as confirming every chunk,
   /// measured on a Deli ES421. The last chunk is always confirmed, so the whole
   /// ticket is known to have arrived before the link closes.
-  Future<void> _writeWebBatched(BluetoothCharacteristic characteristic, List<int> data) async {
+  Future<void> _writeWebBatched(
+    BluetoothCharacteristic characteristic,
+    List<int> data,
+    WriteGate? gate,
+  ) async {
     final batchSize = _options.webBleBatchSize;
     var unconfirmed = 0;
     var offset = 0;
     while (offset < data.length) {
-      final end = offset + _chunkSize < data.length ? offset + _chunkSize : data.length;
+      final end = math.min(offset + _chunkSize, data.length);
       final isLast = end == data.length;
       // Confirm this chunk when the batch is full, or it is the last one.
       final confirm = isLast || unconfirmed >= batchSize;
-      await _pacer?.waitFor(data, offset, end);
+      if (gate != null) await gate(data, offset, end);
       try {
         await characteristic.write(data.sublist(offset, end), withoutResponse: !confirm);
       } catch (e) {
@@ -281,11 +288,32 @@ class BleTransport implements PrinterTransport {
     }
   }
 
+  /// How often a write refused for a busy radio is retried before giving up,
+  /// and how long to wait between tries: about one connection interval.
+  static const _maxBusyRetries = 400;
+  static const _busyRetryPause = Duration(milliseconds: 15);
+
   /// Whether a failed write means the link is gone. flutter_blue_plus_web
   /// doesn't hear about a link the printer dropped, but the browser's error
   /// ("GATT Server is disconnected") says so.
   bool _isLinkLost(Object error) =>
       !_device.isConnected || (kIsWeb && error.toString().contains('disconnected'));
+
+  /// flutter_blue_plus on macOS and iOS: the system cannot queue another
+  /// write without response right now ("you must slow down").
+  bool _isRadioBusy(Object error) => error.toString().contains('must slow down');
+
+  /// A write refused for its length: longer than the MTU allows
+  /// (flutter_blue_plus checks first), or refused by the printer with
+  /// GATT_INVALID_ATTRIBUTE_LENGTH.
+  bool _isTooLong(Object error) {
+    final text = error.toString().toLowerCase();
+    return text.contains('longer than allowed') ||
+        text.contains('attribute length') ||
+        text.contains('attribute_length') ||
+        text.contains('invalid_attr_len') ||
+        text.contains('too long');
+  }
 
   @override
   Future<void> disconnect() async {
@@ -312,7 +340,8 @@ class BleTransport implements PrinterTransport {
   ///
   /// Not every printer replies over BLE, so with no answer it keeps the first
   /// of [ranked]. Skipped when a saved pair is still present, or when there is
-  /// only one known candidate to choose from.
+  /// only one known candidate to choose from. Runs once, while connecting:
+  /// nothing is listened to while printing.
   Future<BleCharacteristicInfo> _confirmWriteCharacteristic(
     List<BluetoothService> services,
     List<BleCharacteristicInfo> ranked,

@@ -78,6 +78,8 @@ class BluetoothPrinter {
     if (characteristicUuid != null) 'characteristicUuid': characteristicUuid,
   };
 
+  /// Reads what [toJson] wrote. Keys it does not know, such as those saved by
+  /// earlier versions, are ignored.
   factory BluetoothPrinter.fromJson(Map<String, dynamic> json) {
     return BluetoothPrinter(
       id: json['id'] as String,

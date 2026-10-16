@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_classic_bluetooth/flutter_classic_bluetooth.dart';
@@ -7,21 +8,15 @@ import 'package:flutter_classic_bluetooth/flutter_classic_bluetooth.dart';
 import '../enums.dart';
 import '../models/bluetooth_printer.dart';
 import '../models/bluetooth_write_options.dart';
-import '../utils/write_pacer.dart';
 import 'printer_transport.dart';
 
 /// Bluetooth Classic (SPP / RFCOMM) printers through flutter_classic_bluetooth.
 /// Android, Windows, macOS and Linux. Native platforms only.
 class ClassicTransport implements PrinterTransport {
-  ClassicTransport(this._printer, {required this._options, this._pacer});
+  ClassicTransport(this._printer, {required this._options});
 
   final BluetoothPrinter _printer;
   final BluetoothWriteOptions _options;
-
-  /// Keeps the data at the printer's print speed. RFCOMM has flow control,
-  /// but most printers take the data before checking for room in their own
-  /// buffer, which a long ticket sent at link speed overruns.
-  final WritePacer? _pacer;
   final FlutterClassicBluetooth _bluetooth = FlutterClassicBluetooth();
 
   BtcConnection? _connection;
@@ -69,18 +64,20 @@ class ClassicTransport implements PrinterTransport {
   }
 
   @override
-  Future<void> write(List<int> data) async {
+  Future<void> write(List<int> data, {WriteGate? gate}) async {
     final connection = _connection;
     if (connection == null || !connection.isConnected) {
       throw const PrinterTransportException(PosPrintResult.printerNotConnected);
     }
     try {
-      final size = _options.classicChunkSize;
-      for (var offset = 0; offset < data.length; offset += size) {
-        final end = offset + size < data.length ? offset + size : data.length;
-        await _pacer?.waitFor(data, offset, end);
+      var offset = 0;
+      while (offset < data.length) {
+        final end = math.min(offset + _options.classicChunkSize, data.length);
+        if (gate != null) await gate(data, offset, end);
+        // Completes once the operating system has taken the bytes.
         await connection.output.add(Uint8List.fromList(data.sublist(offset, end)));
-        if (_options.classicChunkDelay > Duration.zero) {
+        offset = end;
+        if (_options.classicChunkDelay > Duration.zero && offset < data.length) {
           await Future<void>.delayed(_options.classicChunkDelay);
         }
       }

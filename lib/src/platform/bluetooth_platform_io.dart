@@ -13,7 +13,6 @@ import '../transport/ble_transport.dart';
 import '../transport/classic_transport.dart';
 import '../transport/mac_classic_transport.dart';
 import '../transport/printer_transport.dart';
-import '../utils/write_pacer.dart';
 import 'bluetooth_platform.dart';
 
 /// Android, iOS, macOS, Windows and Linux.
@@ -246,7 +245,6 @@ class IoBluetoothPlatform implements BluetoothPlatform {
     required License license,
     required BluetoothWriteOptions options,
     required List<BlePrinterService> bleServices,
-    WritePacer? pacer,
   }) {
     return switch (printer.type) {
       BluetoothPrinterType.ble => BleTransport(
@@ -254,7 +252,6 @@ class IoBluetoothPlatform implements BluetoothPlatform {
         license: license,
         options: options,
         services: bleServices,
-        pacer: pacer,
       ),
       BluetoothPrinterType.classic when !_classicSupported => _UnsupportedTransport(printer),
       BluetoothPrinterType.classic when Platform.isMacOS => MacClassicTransport(
@@ -262,9 +259,8 @@ class IoBluetoothPlatform implements BluetoothPlatform {
         license: license,
         options: options,
         services: bleServices,
-        pacer: pacer,
       ),
-      BluetoothPrinterType.classic => ClassicTransport(printer, options: options, pacer: pacer),
+      BluetoothPrinterType.classic => ClassicTransport(printer, options: options),
     };
   }
 }
@@ -283,7 +279,7 @@ class _UnsupportedTransport implements PrinterTransport {
       throw const PrinterTransportException(PosPrintResult.unsupported);
 
   @override
-  Future<void> write(List<int> data) =>
+  Future<void> write(List<int> data, {WriteGate? gate}) =>
       throw const PrinterTransportException(PosPrintResult.unsupported);
 
   @override

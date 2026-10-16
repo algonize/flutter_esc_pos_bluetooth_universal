@@ -12,5 +12,6 @@ export 'src/models/bluetooth_capabilities.dart';
 export 'src/models/bluetooth_printer.dart';
 export 'src/models/bluetooth_write_options.dart';
 export 'src/models/write_pacing.dart';
+export 'src/print_session.dart' show PrintOutcome;
 export 'src/printer_bluetooth_interface.dart';
 export 'src/printer_bluetooth_manager.dart';

@@ -1,44 +1,75 @@
 import 'dart:typed_data';
 
-/// Dots per ESC * band at double density ("ESC * 33").
+import '../models/print_ticket.dart';
+
+/// Dots per `ESC *` band at double density ("ESC * 33").
 const int _bandHeight = 24;
 
-/// The ESC * bands that flutter_esc_pos_utils' `Generator.image` prints for
-/// an 8-bit RGBA picture, byte for byte, without the alignment it sets first.
+/// An encoded picture: its ESC/POS bytes and the bands inside them.
+class ColumnImage {
+  const ColumnImage(this.bytes, this.bands);
+
+  final Uint8List bytes;
+
+  /// Every band in [bytes], in order.
+  final List<BandSpan> bands;
+}
+
+/// The `ESC *` column bands that flutter_esc_pos_utils' `Generator.image`
+/// prints, and so what `flutter_esc_pos_network_universal` sends, for an 8-bit
+/// RGBA picture: the same dots in the same places, in fewer bytes.
 ///
-/// `Generator.image` gets there through a dozen whole-image passes of the
-/// image package (copy, invert, flip, rotate, resize, composite, a crop and
-/// a grayscale per band), which takes seconds in a browser, where it runs on
-/// the UI thread. Those passes amount to reading each pixel once, so this
-/// does just that.
+/// The bands are bracketed by `ESC 3 0` and `ESC 2`. With the line spacing at
+/// zero, the line feed after each band moves the paper exactly the band's 24
+/// rows, so the bands butt together with no white line between them, however
+/// long the printer pauses between two of them.
 ///
-/// Each band covers 24 rows. It holds 3 bytes per pixel column, the topmost
-/// dot in the high bit, and a dot is printed where the pixel is darker than
-/// mid grey. One blank band always follows the picture, as with
-/// `Generator.image`.
-List<int> columnImageBands(Uint8List rgba, int width, int height) {
+/// Each band holds 3 bytes per pixel column, the topmost dot in the high bit,
+/// and a dot is printed where the pixel is darker than mid grey. One blank
+/// band always follows the picture, as with `Generator.image`. Each band stops
+/// at its last printed column ([trim]) and a blank band keeps one column, so
+/// the paper still moves a band's height; such bands are meant for left
+/// alignment, and [leftPad] blank columns in front of every band put a picture
+/// narrower than the head where centring would have put it. [headWidth]
+/// (dots, default [leftPad] + width) is what a band is charged as when the
+/// sender paces: a trimmed band still covers a band's height of paper.
+///
+/// Bytes that spell an ESC/POS real-time command (DLE EOT, DLE ENQ, DLE DC4)
+/// are not allowed in the image data, because printers execute them even
+/// inside another command's data, which at best transmits a status and at
+/// worst clears the buffer and prints the rest of the picture as text. Where
+/// a byte 0x10 is followed by 0x04, 0x05 or 0x14, that single dot is dropped
+/// ([scrubRealTime]); nothing visible changes.
+ColumnImage columnImageBands(
+  Uint8List rgba,
+  int width,
+  int height, {
+  int leftPad = 0,
+  int? headWidth,
+  bool trim = true,
+  bool scrubRealTime = true,
+}) {
   assert(rgba.length >= width * height * 4);
+  assert(leftPad >= 0);
   final dots = _darkDots(rgba, width * height);
+  final columns = leftPad + width;
+  final fullBytes = 5 + (headWidth ?? columns) * 3 + 1;
 
   // Rounded up to whole bands, plus the extra band Generator.image adds when
   // the height is already a whole number of bands.
   final bands = height ~/ _bandHeight + 1;
-  final bandLength = 5 + width * 3 + 1;
-  final out = Uint8List(3 + bands * bandLength + 2);
-  var i = 0;
+  final out = BytesBuilder(copy: false);
+  final spans = <BandSpan>[];
+  // Reused from band to band: the first leftPad * 3 bytes are never written
+  // and stay blank, the rest is rewritten every time.
+  final data = Uint8List(columns * 3);
 
   // ESC 3 0: no extra line spacing, so the bands touch.
-  out[i++] = 0x1b;
-  out[i++] = 0x33;
-  out[i++] = 0;
+  out.add(const [0x1b, 0x33, 0]);
   for (var band = 0; band < bands; band++) {
-    // ESC * 33 nL nH: 24-dot double density, width columns.
-    out[i++] = 0x1b;
-    out[i++] = 0x2a;
-    out[i++] = 33;
-    out[i++] = width & 0xff;
-    out[i++] = width >> 8;
     final top = band * _bandHeight;
+    var last = -1;
+    var i = leftPad * 3;
     for (var x = 0; x < width; x++) {
       for (var byte = 0; byte < 3; byte++) {
         var value = 0;
@@ -47,15 +78,35 @@ List<int> columnImageBands(Uint8List rgba, int width, int height) {
           value <<= 1;
           if (y < height && dots[y * width + x] == 1) value |= 1;
         }
-        out[i++] = value;
+        data[i++] = value;
+        if (value != 0) last = leftPad + x;
       }
     }
-    out[i++] = 0x0a;
+    final count = trim ? (last < 0 ? 1 : last + 1) : columns;
+    final length = count * 3;
+    if (scrubRealTime) _scrub(data, length);
+
+    final start = out.length;
+    // ESC * 33 nL nH: 24-dot double density, count columns.
+    out.add([0x1b, 0x2a, 33, count & 0xff, count >> 8]);
+    // A copy: the builder keeps what it is given, and data is reused.
+    out.add(Uint8List.fromList(Uint8List.sublistView(data, 0, length)));
+    out.addByte(0x0a);
+    spans.add(BandSpan(start: start, end: out.length, fullBytes: fullBytes));
   }
   // ESC 2: default line spacing.
-  out[i++] = 0x1b;
-  out[i++] = 0x32;
-  return out;
+  out.add(const [0x1b, 0x32]);
+  return ColumnImage(out.takeBytes(), spans);
+}
+
+/// Drops the dot of a 0x10 byte that is followed by the second byte of a
+/// real-time command, inside `data[0..length)`.
+void _scrub(Uint8List data, int length) {
+  for (var i = 0; i + 1 < length; i++) {
+    if (data[i] != 0x10) continue;
+    final next = data[i + 1];
+    if (next == 0x04 || next == 0x05 || next == 0x14) data[i] = 0;
+  }
 }
 
 /// Whether each grey level prints, after the image package takes the
@@ -68,9 +119,10 @@ final Uint8List _printsGrey = Uint8List.fromList([
 
 /// 1 for every pixel printed as a dot, in row order.
 ///
-/// Matches the image package: the colour is inverted, flattened onto black
-/// (its alpha blend), turned grey with 0.299 R + 0.587 G + 0.114 B truncated
-/// to an integer, then reduced to one channel (see [_printsGrey]).
+/// Matches the image package, as `Generator.image` uses it: the colour is
+/// inverted, flattened onto black (its alpha blend), turned grey with
+/// 0.299 R + 0.587 G + 0.114 B truncated to an integer, then reduced to one
+/// channel (see [_printsGrey]).
 Uint8List _darkDots(Uint8List rgba, int pixels) {
   final dots = Uint8List(pixels);
   for (var p = 0, o = 0; p < pixels; p++, o += 4) {

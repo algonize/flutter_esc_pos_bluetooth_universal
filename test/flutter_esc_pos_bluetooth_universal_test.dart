@@ -204,6 +204,22 @@ void main() {
       );
     });
 
+    test('reads a printer saved by an earlier version, ignoring keys it no longer uses', () {
+      final restored = BluetoothPrinter.fromJson({
+        'id': 'AA:BB:CC:DD:EE:FF',
+        'type': 'ble',
+        'name': 'ES421',
+        'serviceUuid': '000018f0-0000-1000-8000-00805f9b34fb',
+        'characteristicUuid': '00002af1-0000-1000-8000-00805f9b34fb',
+        'statusReplies': true,
+        'creditUnitBytes': 118,
+      });
+      expect(restored, printer);
+      expect(restored.serviceUuid, '000018f0-0000-1000-8000-00805f9b34fb');
+      expect(restored.toJson().keys, isNot(contains('creditUnitBytes')));
+      expect(restored.toJson().keys, isNot(contains('statusReplies')));
+    });
+
     test('falls back to the id for the display name', () {
       expect(
         const BluetoothPrinter(id: 'X', type: BluetoothPrinterType.classic, name: ' ').displayName,
@@ -232,14 +248,18 @@ void main() {
     // A 700px wide image must be scaled down to the 576 dot print head.
     final image = img.Image(width: 700, height: 40, numChannels: 4)
       ..clear(img.ColorRgba8(255, 255, 255, 255));
-    final bytes = encodeTicketPixels(
+    final ticket = encodeTicketPixels(
       image.getBytes(order: img.ChannelOrder.rgba),
       700,
       40,
       paperSize: ThermalPosPrinterPageSize.size80mm,
       profile: profile,
     );
+    final bytes = ticket.bytes;
     expect(bytes, isNotEmpty);
+    // 40 rows make two bands (one of them the blank one Generator.image adds).
+    expect(ticket.bands, hasLength(2));
+    expect(ticket.bands.first.fullBytes, 5 + 576 * 3 + 1);
     bool contains(List<int> pattern) {
       for (var i = 0; i + pattern.length <= bytes.length; i++) {
         var match = true;
@@ -259,5 +279,42 @@ void main() {
     // Ends with a paper cut (GS V).
     final tail = bytes.sublist(bytes.length - 6);
     expect(tail.contains(0x1D) && tail.contains(0x56), isTrue, reason: 'GS V cut at the end');
+  });
+
+  test('a widget ticket sends everything as column bands, a barcode included, like the network package', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final profile = await CapabilityProfile.load();
+    // 384 x 120 on a 58 mm head: a line of text, then a 72-row barcode.
+    final image = img.Image(width: 384, height: 120, numChannels: 4)
+      ..clear(img.ColorRgba8(255, 255, 255, 255));
+    for (var y = 2; y < 20; y++) {
+      for (var x = 20; x < 300; x += 4) {
+        image.setPixelRgba(x, y, 0, 0, 0, 255);
+      }
+    }
+    for (var y = 48; y < 120; y++) {
+      for (var x = 20; x < 364; x += (x ~/ 7).isEven ? 1 : 3) {
+        image.setPixelRgba(x, y, 0, 0, 0, 255);
+      }
+    }
+    final ticket = encodeTicketPixels(
+      image.getBytes(order: img.ChannelOrder.rgba),
+      384,
+      120,
+      paperSize: ThermalPosPrinterPageSize.size58mm,
+      profile: profile,
+    );
+    final bytes = ticket.bytes;
+    expect(bytes.sublist(0, 3), [0x1b, 0x61, 0x30]);
+    // Six bands, every one an ESC * 33 band ending in its line feed.
+    expect(ticket.bands, hasLength(6));
+    for (final b in ticket.bands) {
+      expect(bytes.sublist(b.start, b.start + 3), [0x1b, 0x2a, 33]);
+      expect(bytes[b.end - 1], 0x0a);
+    }
+    // No raster command anywhere.
+    for (var i = 0; i + 2 < bytes.length; i++) {
+      expect(bytes[i] == 0x1d && bytes[i + 1] == 0x76 && bytes[i + 2] == 0x30, isFalse);
+    }
   });
 }

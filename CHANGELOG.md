@@ -2,51 +2,41 @@
 
 First release of **flutter_esc_pos_bluetooth_universal**, a complete rewrite of [`esc_pos_bluetooth`](https://github.com/andrey-ushakov/esc_pos_bluetooth) / [`flutter_esc_pos_bluetooth`](https://pub.dev/packages/flutter_esc_pos_bluetooth). It is the Bluetooth companion of [`flutter_esc_pos_network_universal`](https://pub.dev/packages/flutter_esc_pos_network_universal) and shares its API.
 
-- **Universal Support**: One API for Android, iOS, macOS, Windows, Linux and Flutter Web.
-- **BLE Printers**: Printing through `flutter_blue_plus` 2.x on every platform. In the browser it uses Web Bluetooth.
-- **Bluetooth Classic (SPP) Printers**: Support for the kind most 58/80 mm POS printers are.
+- **Universal support**: one API for Android, iOS, macOS, Windows, Linux and Flutter Web.
+- **BLE printers** through `flutter_blue_plus` 2.x on every platform; in the browser it uses Web Bluetooth.
+- **Bluetooth Classic (SPP) printers**, the kind most 58/80 mm POS printers are:
   - Android, Windows, macOS and Linux use `flutter_classic_bluetooth`.
-  - Chromium browsers use Web Serial over Bluetooth RFCOMM (desktop Chrome 117+), with no browser extension needed.
-  - On macOS, where RFCOMM connections can stall until they time out, a Classic printer is reached through its BLE side when it has one (most are dual-mode), found by name. RFCOMM is the fallback, tried once.
+  - Chromium browsers use Web Serial over Bluetooth RFCOMM (desktop Chrome 117+), with no browser extension.
+  - On macOS, where RFCOMM connections can stall, a Classic printer is reached through its BLE side when it has one (most are dual-mode), found by name. RFCOMM is the fallback.
   - iOS is BLE only, because Apple allows Classic Bluetooth only for MFi accessories.
-- **Smart Characteristic Selection**: Finds the BLE characteristic to print on:
-  - It first tries a table of common printer services (`defaultBlePrinterServices`), then falls back to any writable characteristic.
-  - Printers often expose several known services and only some reach the print engine (the Deli ES421 takes data on 18F0 and FF00, while its ISSC UART accepts writes and drops them). So printer services come before the module UART, and when several match, a status request (DLE EOT 1, prints nothing) picks the one the printer answers on.
-  - The choice is saved on the printer, so later connections skip the search.
-  - Apps can add their own UUIDs through `bleServices`.
-- **Reliable Writes**:
-  - BLE data is sent in chunks sized to the negotiated MTU, and the size steps down automatically when a write is rejected.
-  - A BLE write without response only queues the data, and closing the link straight after throws the queue away. So the last chunk is sent with response when the printer allows it, and the ticket is known to have arrived before the link closes.
-  - BLE connects wait briefly for Bluetooth to be ready, so a printer reconnected right at app launch doesn't fail while the adapter state is still unknown.
-  - On the web, BLE chunks are written in batches: a few without response, then one confirmed by the printer (`webBleBatchSize`, default 4). Browsers report a write without response as done at once, and Chrome on macOS drops the ones CoreBluetooth can't queue without an error, so tickets could vanish while the print reported success. Confirming one chunk per batch keeps the queue from overflowing while running about twice as fast as confirming every chunk (measured ~5.5 vs ~2.9 kB/s on a Deli ES421). Chunks are 182 bytes; larger BLE writes are fragmented and slower on macOS. A printer that only takes write without response gets 20-byte chunks, 20 ms apart; one that only takes write with response confirms every chunk.
-  - Web Serial opens the port with a 16 KB buffer instead of Chrome's default of 255 bytes. Chrome sends one buffer at a time and waits on the Bluetooth link after each, so a widget receipt (8 to 100 KB) used to go out 255 bytes per round trip.
-  - Web Serial waits until the browser has sent every byte before closing the port. A write there only buffers the bytes, and closing the port throws that buffer away and drops the Bluetooth link, so a ticket could print in full, in part or not at all while always reporting success.
-  - On the web, a BLE link the printer dropped is reported as `printerNotConnected`, and Chrome's "Unsupported device" (a dual-mode printer paired in macOS, which Chrome can only reach as Classic) as `unsupported`.
-  - Classic and Web Serial stream in larger slices with a short pause between them.
-  - **Data is paced to the printer's print speed** (`WritePacing`, on by default at 40 mm/s on text, 5 mm/s on solid black, with a 2 kB burst). A thermal printer prints at a fixed speed and buffers only a few to a few dozen kilobytes; Bluetooth delivers faster than a 58 mm head prints (a Deli ES421 at 60 mm/s consumes ~23 kB/s of raster), and nothing holds the link back: a BLE write without response is never refused, and Classic printers take data before checking for room. A short ticket fits in the buffer, but on a long one the overflow is dropped, which puts the printer out of step with the `ESC *` image command, and the bottom of the receipt prints as random characters. Pacing lets an initial burst through and then sends no faster than the printer prints, on every link (BLE, Classic, Web Bluetooth, Web Serial). The byte rate follows from the paper width, as a millimetre of raster is exactly the paper width in dots in bytes. It is content-aware: a thermal head fires a dense row in several strobe groups, so a QR code or barcode prints several times slower than text, and that is exactly where a fixed rate still overran the buffer (the receipt broke right after the QR code). Bytes are charged by the dots they print (`darkMmPerSecond`, default 5 mm/s on solid black against 40 mm/s on text; a Deli ES421 still dropped whole barcode bands at 10 mm/s), so the sender slows through dense graphics and speeds back up on text. Tickets printed back to back on one connection share the allowance. In debug builds every print logs its size, time, darkness and rate.
-  - Everything can be tuned through `BluetoothWriteOptions`.
-- **Widget Printing**: `printWidget` renders any Flutter widget as a receipt. The widget is laid out at most as wide as the paper, so width-filling layouts such as `Row` + `Expanded` work. It prints exactly the bytes the network package prints (ESC * bands, clamped to the print-head width), but builds them about 20 times faster: from the raw 8-bit pixels of the capture, with no PNG encode and decode and none of the image package's whole-image passes. In a release web build a long 80 mm receipt went from 147 ms to 6 ms. The pixels are always 8 bits per channel, so the 16-bit capture of real iOS devices can't garble the output.
-- **Discovery**:
-  - On native platforms, BLE and Classic scanning are merged into one list, with paired printers first, then by signal strength.
-  - `pairedPrinters()` lists printers usable without scanning.
-  - On the web, `requestPrinter()` opens the browser's chooser.
-- **Saved Printers**: `BluetoothPrinter` converts to and from JSON, so a chosen printer can be stored and used again without scanning.
-- **Platform Insight**:
-  - `capabilities` reports what the platform supports.
-  - `checkAvailability()` reports whether Bluetooth is on, off, unauthorized or unsupported.
-  - `requestPermissions()` asks for Bluetooth permissions on Android 12+.
-  - `connectionStatus` streams the connection state.
-  - `lastError` holds the underlying error behind the last failure, for logs and bug reports.
-- **Clear Results**: `PosPrintResult` is now an enum with a readable `msg`. Names shared with the network package (`success`, `timeout`, `ticketEmpty`, `printInProgress`, …) mean the same thing. Bluetooth adds `bluetoothUnavailable`, `permissionDenied`, `unsupported`, `userCancelled`, `printerAccessRequired`, `noWritableCharacteristic`, `connectionFailed` and `writeFailed`.
-- **Paper Size Support**: 58 mm, 72 mm and 80 mm paper widths.
-- **Example App**: A full example for every platform. It covers scanning or the web chooser, a test ticket and widget printing, with Bluetooth permissions already configured.
+- **Characteristic selection**: tries a table of common printer services (`defaultBlePrinterServices`), then any writable characteristic. When several known ones match (the Deli ES421 takes data on 18F0 and FF00 while its ISSC UART accepts writes and drops them), a status request picks the one the printer answers on. The choice is saved on the printer. Apps can add their own UUIDs through `bleServices`.
+- **Clean widget receipts**, sent exactly as the network package sends them: one image of `ESC *` column bands, then a feed and a cut. No raster commands, nothing that depends on what the receipt holds.
+  - **No white lines**: the bands are bracketed by `ESC 3 0` / `ESC 2`, so each line feed moves the paper exactly one band.
+  - **Every part prints, no random characters**: Bluetooth has no TCP window to slow the sender, so every write is paced to the print speed (`WritePacing`: 50 mm/s on text, 5 mm/s on dense bands, 4 kB burst). A band is dense when a quarter of its bits are set, measured from the picture itself, so any logo, QR code or barcode gets its time.
+  - **Timing that follows the printer**: a printer prints a band only once all of it has arrived, so each band goes out at link speed and the next waits for its print time. Paying for a band while sending it left the printer idle while a graphic trickled in, then flooded it with the text after the graphic while it was still printing it, and a 58 mm printer threw that text away. Each byte is charged once, even when the radio asks for a write to be retried.
+  - Explicit left alignment at the start of every ticket and no `ESC @`, as in the network package.
+  - Built straight from the captured 8-bit pixels: the same dots as `Generator.image`, trimmed of blank columns, about 20 times faster, and immune to the 16-bit captures that garbled receipts on real iPhones.
+  - Bytes that would spell a real-time command (`DLE EOT`, `DLE ENQ`, `DLE DC4`) never appear in image data.
+  - `gapMm` leaves blank paper below the receipt for tearing by hand.
+- **Reliable writes**:
+  - BLE chunks follow the negotiated MTU and step down when a write is rejected for its length; a write refused for a busy radio is retried at the same size.
+  - The last BLE chunk is sent with response when possible, so the ticket has arrived before the link closes.
+  - On the web, BLE writes go in batches with one confirmed write every `webBleBatchSize` chunks, as Chrome on macOS silently drops unconfirmed writes its queue cannot hold.
+  - Web Serial opens the port with a 16 KB buffer and waits until the browser has sent every byte before closing it.
+- **Raw ESC/POS**: `printTicket` sends bytes from the re-exported `Generator`, paced by the dots they print.
+- **Discovery**: BLE and Classic scanning merged into one list (paired first, then by signal strength), `pairedPrinters()`, and `requestPrinter()` for the browser chooser.
+- **Saved printers**: `BluetoothPrinter` converts to and from JSON.
+- **Platform insight**: `capabilities`, `checkAvailability()`, `requestPermissions()`, `connectionStatus`, `lastError` and `lastPrint`.
+- **Clear results**: `PosPrintResult` is an enum with a readable `msg`, its shared names matching the network package.
+- **Paper sizes**: 58 mm, 72 mm and 80 mm.
+- **Example app** for every platform.
 
 ### Migrating from `esc_pos_bluetooth` / `flutter_esc_pos_bluetooth`
 
 - **`PrinterBluetooth`** is now **`BluetoothPrinter`**, a plain data class with `id`, `name`, `type` (`ble` / `classic`) and `toJson()` / `fromJson()`.
-- **`PrinterBluetoothManager()`** now needs a `license` (`License.nonprofit` or `License.commercial`). The value is passed to `flutter_blue_plus`, whose own licence requires it.
-- **`startScan(Duration)`** is now `startScan({timeout})` and returns a `Future`. **`selectPrinter`** is now asynchronous as well.
-- **`printTicket`** takes raw ESC/POS bytes (`List<int>`). Build them with the re-exported `Generator` from `flutter_esc_pos_utils`; the old `Ticket` class is gone.
+- **`PrinterBluetoothManager()`** now needs a `license` (`License.nonprofit` or `License.commercial`), passed to `flutter_blue_plus`, whose own licence requires it.
+- **`startScan(Duration)`** is now `startScan({timeout})` and returns a `Future`. **`selectPrinter`** is asynchronous as well.
+- **`printTicket`** takes raw ESC/POS bytes (`List<int>`). Build them with the re-exported `Generator`; the old `Ticket` class is gone.
 - **`queueSleepTimeMs` / `chunkSizeBytes`** are replaced by `BluetoothWriteOptions`.
 - **`PosPrintResult`** is an enum. Compare with `==` as before, and read the text from `msg`.
 - **`flutter_blue` and `rxdart`** are no longer dependencies.
@@ -54,6 +44,6 @@ First release of **flutter_esc_pos_bluetooth_universal**, a complete rewrite of 
 ### Requirements
 
 - Dart 3.12+ and Flutter 3.44+ (required by `flutter_classic_bluetooth`).
-- `flutter_blue_plus` is under the FlutterBluePlus License. It is free for personal, nonprofit and educational use; for-profit use needs a commercial licence from its authors. See the README.
+- `flutter_blue_plus` is under the FlutterBluePlus License: free for personal, nonprofit and educational use; for-profit use needs a commercial licence from its authors.
 
 Based on the original work by Andrey Ushakov ([esc_pos_bluetooth](https://github.com/andrey-ushakov/esc_pos_bluetooth), BSD-3).

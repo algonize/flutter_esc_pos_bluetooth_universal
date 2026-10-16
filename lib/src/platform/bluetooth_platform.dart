@@ -6,7 +6,6 @@ import '../models/bluetooth_capabilities.dart';
 import '../models/bluetooth_printer.dart';
 import '../models/bluetooth_write_options.dart';
 import '../transport/printer_transport.dart';
-import '../utils/write_pacer.dart';
 
 /// Discovery and transport creation for one platform family. Picked at compile
 /// time: `bluetooth_platform_io.dart` or `bluetooth_platform_web.dart`.
@@ -45,13 +44,10 @@ abstract interface class BluetoothPlatform {
     required List<BlePrinterService> bleServices,
   });
 
-  /// [pacer] holds the data back to the printer's print speed; null sends at
-  /// link speed.
   PrinterTransport createTransport(
     BluetoothPrinter printer, {
     required License license,
     required BluetoothWriteOptions options,
     required List<BlePrinterService> bleServices,
-    WritePacer? pacer,
   });
 }

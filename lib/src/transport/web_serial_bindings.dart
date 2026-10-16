@@ -49,5 +49,6 @@ extension type SerialPort._(JSObject _) implements JSObject {
   external JSPromise<JSAny?> open(SerialOptions options);
   external JSPromise<JSAny?> close();
   external web.WritableStream? get writable;
+  external web.ReadableStream? get readable;
   external SerialPortInfo getInfo();
 }

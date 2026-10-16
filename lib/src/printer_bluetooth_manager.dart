@@ -10,22 +10,23 @@ import 'models/ble_printer_service.dart';
 import 'models/bluetooth_capabilities.dart';
 import 'models/bluetooth_printer.dart';
 import 'models/bluetooth_write_options.dart';
+import 'models/print_ticket.dart';
 import 'platform/bluetooth_platform.dart';
 import 'platform/bluetooth_platform_io.dart'
     if (dart.library.js_interop) 'platform/bluetooth_platform_web.dart'
     as platform;
+import 'print_session.dart';
 import 'printer_bluetooth_interface.dart';
 import 'raster/widget_raster.dart';
 import 'transport/printer_transport.dart';
-import 'utils/write_pacer.dart';
 
 /// Finds, connects to and prints on ESC/POS Bluetooth printers, BLE and
 /// Classic, with the same code on Android, iOS, macOS, Windows, Linux and web.
 ///
 /// ```dart
 /// final manager = PrinterBluetoothManager(license: License.nonprofit);
-/// manager.selectPrinter(printer);              // from a scan, a list or the web chooser
-/// final result = await manager.printTicket(bytes);
+/// await manager.selectPrinter(printer);        // from a scan, a list or the web chooser
+/// final result = await manager.printWidget(context, child: const MyReceipt());
 /// ```
 ///
 /// [license] is passed to flutter_blue_plus for BLE connections. Choose the
@@ -55,8 +56,10 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
 
   BluetoothPrinter? _selectedPrinter;
   PrinterTransport? _transport;
+  PrintSession? _session;
   bool _isPrinting = false;
   Object? _lastError;
+  PrintOutcome? _lastPrint;
 
   final _statusController = StreamController<BluetoothConnectionStatus>.broadcast();
   BluetoothConnectionStatus _status = BluetoothConnectionStatus.disconnected;
@@ -128,13 +131,16 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
   // ── Selection ──────────────────────────────────────────────────────────────
 
   /// The printer used by [connect] and the print methods. After a successful
-  /// connection it also carries what was learned (the BLE write characteristic),
-  /// so save this one rather than the scan result.
+  /// connection it also carries what was learned (the BLE write
+  /// characteristic, or on macOS the BLE side of a Classic printer), so save
+  /// this one rather than the scan result.
   BluetoothPrinter? get selectedPrinter => _selectedPrinter;
 
   /// Chooses the printer to print on. Disconnects from a different one first.
   Future<void> selectPrinter(BluetoothPrinter printer) async {
     if (_selectedPrinter == printer) {
+      // The same device: keep the characteristic learned on a connection
+      // when the new copy does not carry one.
       _selectedPrinter = printer.serviceUuid == null && _selectedPrinter?.serviceUuid != null
           ? _selectedPrinter
           : printer;
@@ -157,6 +163,9 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
   /// bug reports. The returned [PosPrintResult] is the user-facing summary.
   Object? get lastError => _lastError;
 
+  /// How the last ticket was sent: its size, time and rate. For logs.
+  PrintOutcome? get lastPrint => _lastPrint;
+
   @override
   ThermalPosPrinterPageSize get paperSize => _paperSize;
 
@@ -178,19 +187,23 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
     if (capabilities.chooser && printer.isClassic) await pairedPrinters();
 
     _setStatus(BluetoothConnectionStatus.connecting);
-    final transport = _platform.createTransport(
-      printer,
-      license: _license,
-      options: _writeOptions,
-      bleServices: _bleServices,
-      // Paced to the paper width: a millimetre of raster is widthPx bytes.
-      pacer: WritePacer.of(_writeOptions.pacing, widthDots: _paperSize.widthPx.toInt()),
-    );
     try {
+      _profile ??= await CapabilityProfile.load();
+      final transport = _platform.createTransport(
+        printer,
+        license: _license,
+        options: _writeOptions,
+        bleServices: _bleServices,
+      );
       await transport.connect(timeout ?? _timeout);
       _transport = transport;
       _selectedPrinter = transport.printer;
-      _profile ??= await CapabilityProfile.load();
+      _session = PrintSession(
+        transport: transport,
+        pacing: _writeOptions.pacing,
+        // Paced to the paper width: a millimetre of raster is widthPx bytes.
+        widthDots: _paperSize.widthPx.toInt(),
+      );
       _setStatus(BluetoothConnectionStatus.connected);
       return PosPrintResult.success;
     } on PrinterTransportException catch (e) {
@@ -208,6 +221,7 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
   Future<PosPrintResult> disconnect({Duration? timeout}) async {
     final transport = _transport;
     _transport = null;
+    _session = null;
     if (transport == null) return PosPrintResult.success;
     _setStatus(BluetoothConnectionStatus.disconnecting);
     try {
@@ -228,27 +242,61 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
   /// Disconnects afterwards unless [isDisconnect] is false, which keeps the
   /// link open for more tickets (call [disconnect] when done).
   @override
-  Future<PosPrintResult> printTicket(List<int> data, {bool isDisconnect = true}) async {
-    if (_isPrinting) return PosPrintResult.printInProgress;
-    if (data.isEmpty) return PosPrintResult.ticketEmpty;
+  Future<PosPrintResult> printTicket(List<int> data, {bool isDisconnect = true}) {
+    if (data.isEmpty) return Future.value(PosPrintResult.ticketEmpty);
+    final bytes = data is Uint8List ? data : Uint8List.fromList(data);
+    return _print(PrintTicket(bytes), isDisconnect: isDisconnect);
+  }
 
+  /// Renders [child] as an image and prints it, connecting first when needed.
+  /// Handy for logos, QR codes, barcodes, non-Latin scripts and rich layouts.
+  /// The image goes as `ESC *` column bands, as the network package sends it.
+  ///
+  /// [gapMm] adds that much blank paper below the receipt, for tearing by
+  /// hand on printers without a cutter (most Bluetooth receipt printers).
+  @override
+  Future<PosPrintResult> printWidget(
+    BuildContext context, {
+    required Widget child,
+    bool isDisconnect = true,
+    double gapMm = 0,
+  }) async {
+    if (_isPrinting) return PosPrintResult.printInProgress;
+    if (_selectedPrinter == null) return PosPrintResult.printerNotSelected;
+    final PrintTicket ticket;
+    try {
+      final profile = _profile ??= await CapabilityProfile.load();
+      if (!context.mounted) return PosPrintResult.unknown;
+      ticket = await buildWidgetTicket(
+        context,
+        child,
+        paperSize: _paperSize,
+        profile: profile,
+        gapMm: gapMm,
+      );
+    } catch (e) {
+      // Rendering failed, for example a widget that can't lay out at paper width.
+      _lastError = e;
+      return PosPrintResult.ticketEmpty;
+    }
+    if (ticket.isEmpty) return PosPrintResult.ticketEmpty;
+    return _print(ticket, isDisconnect: isDisconnect);
+  }
+
+  Future<PosPrintResult> _print(PrintTicket ticket, {required bool isDisconnect}) async {
+    if (_isPrinting) return PosPrintResult.printInProgress;
     _isPrinting = true;
     try {
       if (!isConnected) {
         final result = await connect();
         if (result != PosPrintResult.success) return result;
       }
-      final clock = Stopwatch()..start();
-      await _transport!.write(data);
-      clock.stop();
+      final outcome = await _session!.send(ticket);
+      _lastPrint = outcome;
       if (kDebugMode) {
-        final ms = clock.elapsedMilliseconds;
-        final rate = ms == 0 ? 0 : data.length / ms; // bytes per ms == kB/s
-        final dark = WritePacer.dotsIn(data, 0, data.length) / (data.length * 8) * 100;
         debugPrint(
-          'flutter_esc_pos_bluetooth_universal: sent ${data.length} B in $ms ms '
-          '(${rate.toStringAsFixed(1)} kB/s, ${dark.toStringAsFixed(1)}% dark, '
-          'pacing ${_writeOptions.pacing ?? 'off'}, ${_paperSize.widthPx.toInt()} dots)',
+          'flutter_esc_pos_bluetooth_universal: $outcome, '
+          '${_writeOptions.pacing ?? 'no pacing'}, ${_paperSize.widthPx.toInt()} dots',
         );
       }
       return PosPrintResult.success;
@@ -263,34 +311,6 @@ class PrinterBluetoothManager implements BasePrinterBluetoothManager {
     } finally {
       if (isDisconnect) await disconnect();
       _isPrinting = false;
-    }
-  }
-
-  /// Renders [child] as an image and prints it, connecting first when needed.
-  /// Handy for logos, QR codes, non-Latin scripts and rich layouts.
-  @override
-  Future<PosPrintResult> printWidget(
-    BuildContext context, {
-    required Widget child,
-    bool isDisconnect = true,
-  }) async {
-    if (_isPrinting) return PosPrintResult.printInProgress;
-    if (_selectedPrinter == null) return PosPrintResult.printerNotSelected;
-    try {
-      final profile = _profile ??= await CapabilityProfile.load();
-      if (!context.mounted) return PosPrintResult.unknown;
-      final bytes = await buildWidgetTicket(
-        context,
-        child,
-        paperSize: _paperSize,
-        profile: profile,
-      );
-      if (bytes.isEmpty) return PosPrintResult.ticketEmpty;
-      return await printTicket(bytes, isDisconnect: isDisconnect);
-    } catch (e) {
-      // Rendering failed, for example a widget that can't lay out at paper width.
-      _lastError = e;
-      return PosPrintResult.ticketEmpty;
     }
   }
 
