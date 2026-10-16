@@ -69,13 +69,23 @@ void main() {
       final (fast, reference) = (await tester.runAsync(
         () async => (
           // Scrubbing off: the reference prints every dot.
-          await buildWidgetTicket(context, _receipt, paperSize: paperSize, profile: profile, scrubRealTime: false),
+          await buildWidgetTicket(
+            context,
+            _receipt,
+            paperSize: paperSize,
+            profile: profile,
+            scrubRealTime: false,
+          ),
           await _networkPackageTicket(context, _receipt, paperSize, profile),
         ),
       ))!;
       final head = paperSize.widthPx.toInt();
       expect(fast.bytes.length, greaterThan(1000), reason: paperSize.title);
-      expect(fast.bytes.length, lessThan(reference.length), reason: '${paperSize.title}: trimmed bands');
+      expect(
+        fast.bytes.length,
+        lessThan(reference.length),
+        reason: '${paperSize.title}: trimmed bands',
+      );
       final ours = decodePaper(fast.bytes, headWidth: head);
       final theirs = decodePaper(reference, headWidth: head);
       expect(ours.sameAs(theirs), isTrue, reason: '${paperSize.title}: ${ours.diff(theirs)}');

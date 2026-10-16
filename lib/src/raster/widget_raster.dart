@@ -41,7 +41,10 @@ Future<PrintTicket> buildWidgetTicket(
   assert(gapMm >= 0);
   // 8 dots per millimetre, captured at one pixel per dot.
   final receipt = gapMm > 0
-      ? Padding(padding: EdgeInsets.only(bottom: gapMm * 8), child: child)
+      ? Padding(
+          padding: EdgeInsets.only(bottom: gapMm * 8),
+          child: child,
+        )
       : child;
   final image = await ScreenshotController().longWidgetToUiImage(
     InheritedTheme.captureAll(context, Material(color: Colors.white, child: receipt)),

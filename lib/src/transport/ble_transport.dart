@@ -223,7 +223,9 @@ class BleTransport implements PrinterTransport {
         // A write rejected for its length: retry the same bytes smaller,
         // unless the app fixed the size itself. Browsers give no reason, so
         // there any other rejection is taken as one.
-        if (_options.bleChunkSize == null && _chunkSize > minBleChunk && (kIsWeb || _isTooLong(e))) {
+        if (_options.bleChunkSize == null &&
+            _chunkSize > minBleChunk &&
+            (kIsWeb || _isTooLong(e))) {
           _chunkSize = nextSmallerBleChunk(_chunkSize);
           continue;
         }

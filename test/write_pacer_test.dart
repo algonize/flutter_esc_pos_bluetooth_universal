@@ -20,7 +20,7 @@ void main() {
     test('defaults to the speeds that printed a whole receipt cleanly', () {
       const pacing = WritePacing();
       expect(pacing.mmPerSecond, 50);
-      expect(pacing.darkMmPerSecond, 5);
+      expect(pacing.darkMmPerSecond, 2.5);
       expect(pacing.burstBytes, 4096);
       expect(pacing.denseThreshold, 0.25);
     });

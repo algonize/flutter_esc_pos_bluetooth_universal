@@ -207,7 +207,11 @@ class WebBluetoothPlatform implements BluetoothPlatform {
         options: options,
         services: bleServices,
       ),
-      BluetoothPrinterType.classic => WebSerialTransport(printer, _ports[printer.id], options: options),
+      BluetoothPrinterType.classic => WebSerialTransport(
+        printer,
+        _ports[printer.id],
+        options: options,
+      ),
     };
   }
 }

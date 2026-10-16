@@ -22,8 +22,7 @@ class PrintOutcome {
   final bool paced;
 
   /// The average rate, in kB/s.
-  double get kilobytesPerSecond =>
-      elapsed.inMilliseconds == 0 ? 0 : bytes / elapsed.inMilliseconds;
+  double get kilobytesPerSecond => elapsed.inMilliseconds == 0 ? 0 : bytes / elapsed.inMilliseconds;
 
   @override
   String toString() =>

@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 /// One bit-image band inside a ticket's bytes: an `ESC *` column band with
-/// its line feed, or a 24-row stretch of a `GS v 0` raster command.
+/// its line feed.
 ///
 /// The sender paces a band by the paper it covers rather than the bytes it
 /// takes, so a band trimmed of blank columns is still charged as a full band.

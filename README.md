@@ -46,7 +46,7 @@ At runtime, `PrinterBluetoothManager.capabilities` tells you which of these appl
 
 ```yaml
 dependencies:
-  flutter_esc_pos_bluetooth_universal: <latest-version>
+  flutter_esc_pos_bluetooth_universal: ^1.0.0
 ```
 
 ```dart
@@ -194,7 +194,7 @@ A widget receipt is captured at one pixel per print-head dot and sent exactly as
 
 **No white lines.** The bands are bracketed by `ESC 3 0` (zero line spacing) and `ESC 2`, so the line feed after each band moves the paper exactly one band. The bands butt together however long the printer pauses between two of them.
 
-**Every part prints, nothing turns into random characters.** Over Wi-Fi the printer's TCP window slows the sender down, which is why the network package needs no pacing. Bluetooth has nothing like it: a BLE write without response is never refused, and most printers take Classic data before checking for room. So the package keeps its own account of what the printer has left to print (`WritePacing`): **50 mm/s on text**, **5 mm/s on dense bands**, after a **4 kB burst**. A band is dense when a quarter of its bits are set, measured from the actual picture, so a dark logo, a QR code and a barcode all get their time.
+**Every part prints, nothing turns into random characters.** Over Wi-Fi the printer's TCP window slows the sender down, which is why the network package needs no pacing. Bluetooth has nothing like it: a BLE write without response is never refused, and most printers take Classic data before checking for room. So the package keeps its own account of what the printer has left to print (`WritePacing`): **50 mm/s on text**, **2.5 mm/s on dense bands**, after a **4 kB burst**. A band is dense when a quarter of its bits are set, measured from the actual picture, so a dark logo, a QR code and a barcode all get their time.
 
 **The timing follows the printer.** A printer prints a band only once all of it has arrived. So each band goes out at link speed, and the next one waits for its print time. The printer is never left waiting for a slow band to trickle in, and never handed the text after a graphic while it is still printing that graphic, which a 58 mm printer answered by throwing the text away.
 
@@ -210,7 +210,7 @@ PrinterBluetoothManager(
   writeOptions: const BluetoothWriteOptions(
     pacing: WritePacing(
       mmPerSecond: 50,                                 // text speed
-      darkMmPerSecond: 5,                              // barcode / QR / logo speed
+      darkMmPerSecond: 2.5,                            // barcode / QR / logo speed
       burstBytes: 4096,                                // sent at once before pacing starts
     ),                                                 // null turns pacing off
   ),

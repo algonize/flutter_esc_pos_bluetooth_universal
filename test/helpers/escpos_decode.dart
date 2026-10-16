@@ -38,7 +38,9 @@ class DecodedPaper {
     if (other.height != height) return 'height $height vs ${other.height}';
     for (var y = 0; y < height; y++) {
       for (var x = 0; x < headWidth; x++) {
-        if (rows[y][x] != other.rows[y][x]) return 'row $y column $x: ${rows[y][x]} vs ${other.rows[y][x]}';
+        if (rows[y][x] != other.rows[y][x]) {
+          return 'row $y column $x: ${rows[y][x]} vs ${other.rows[y][x]}';
+        }
       }
     }
     return 'identical';

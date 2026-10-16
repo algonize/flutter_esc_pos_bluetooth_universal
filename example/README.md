@@ -1,17 +1,49 @@
-# flutter_esc_pos_bluetooth_universal_example
+# flutter_esc_pos_bluetooth_universal example
 
-A new Flutter project.
+A small app that finds a Bluetooth thermal printer and prints on it in the two ways the package
+offers:
 
-## Getting Started
+- **Print test ticket**: raw ESC/POS bytes built with the re-exported `Generator`, sent with
+  `printTicket`.
+- **Print widget**: any Flutter widget, rendered at the paper width and sent with `printWidget`.
 
-This project is a starting point for a Flutter application.
+## Run it
 
-A few resources to get you started if this is your first Flutter project:
+```bash
+cd example
+flutter pub get
+flutter run   # Android, iOS, macOS, Windows, Linux or Chrome
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+1. Choose the paper size (58, 72 or 80 mm).
+2. On a phone or computer, tap **Scan** and then your printer. In Chrome or Edge, tap
+   **BLE printer** or **Classic printer (paired)** and pick it in the browser's chooser.
+3. Tap **Print test ticket** or **Print widget**.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+The Bluetooth permissions and usage descriptions are already set in this example's Android
+manifest, iOS and macOS `Info.plist` files and macOS entitlements. The package README lists what
+your own app needs.
+
+## The two print calls
+
+```dart
+final manager = PrinterBluetoothManager(
+  license: License.nonprofit,
+  paperSize: ThermalPosPrinterPageSize.size80mm,
+);
+await manager.selectPrinter(printer); // from a scan, pairedPrinters() or requestPrinter() on the web
+
+// Raw ESC/POS bytes.
+final generator = Generator(PaperSize.mm80, await CapabilityProfile.load());
+await manager.printTicket([
+  ...generator.text('Hello', styles: const PosStyles(bold: true)),
+  ...generator.feed(2),
+  ...generator.cut(),
+]);
+
+// Any widget.
+await manager.printWidget(context, child: const MyReceipt());
+```
+
+`License.nonprofit` covers personal, nonprofit and educational use. Use `License.commercial` for
+any for-profit use (see the flutter_blue_plus licence).

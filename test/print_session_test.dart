@@ -25,7 +25,8 @@ class _FakeTransport implements PrinterTransport {
   final received = <int>[];
 
   @override
-  BluetoothPrinter get printer => const BluetoothPrinter(id: 'printer', type: BluetoothPrinterType.ble);
+  BluetoothPrinter get printer =>
+      const BluetoothPrinter(id: 'printer', type: BluetoothPrinterType.ble);
 
   @override
   bool get isConnected => true;
@@ -72,7 +73,9 @@ WritePacing _pacing({int burst = 0, double dark = 5}) =>
 
 void main() {
   group('TicketCost', () {
-    const perDot = 9 / 8; // default pacing: a dense byte costs 10, a dot 9/8 extra
+    // A dense byte costs 10, so a dot outside a band 9/8 extra.
+    const pacing = WritePacing(mmPerSecond: 50, darkMmPerSecond: 5);
+    const perDot = 9 / 8;
     final bytes = Uint8List.fromList([
       0x1b, 0x33, 0x00, // plain: 3 bytes, 8 dots
       ...List.filled(10, 0x00), // a text band, trimmed: 10 bytes for 100
@@ -88,9 +91,13 @@ void main() {
     );
 
     test('a band is due once all of it has been sent, not while it goes', () {
-      final cost = TicketCost(ticket(), const WritePacing());
+      final cost = TicketCost(ticket(), pacing);
       expect(cost.dueBefore(0), 0, reason: 'nothing sent yet');
-      expect(cost.dueBefore(5), closeTo(3 + 8 * perDot, 1e-9), reason: 'the plain bytes before the text band');
+      expect(
+        cost.dueBefore(5),
+        closeTo(3 + 8 * perDot, 1e-9),
+        reason: 'the plain bytes before the text band',
+      );
       expect(cost.dueBefore(8), 0, reason: 'the text band is still going out');
       expect(cost.dueBefore(13), 100, reason: 'the text band has gone: its full width');
       expect(cost.dueBefore(18), 0, reason: 'the dense band is still going out');
@@ -100,37 +107,40 @@ void main() {
     });
 
     test('charges every byte once, however often the link offers a piece again', () {
-      final cost = TicketCost(ticket(), const WritePacing());
+      final cost = TicketCost(ticket(), pacing);
       expect(cost.dueBefore(13), closeTo(3 + 8 * perDot + 100, 1e-9));
       expect(cost.dueBefore(13), 0, reason: 'the same piece, refused and offered again');
       expect(cost.dueBefore(15), 0);
       expect(cost.dueBefore(23), 1000);
     });
 
-    test('a widget ticket is charged its text at the text rate and its barcode at the dark rate', () {
-      // 48 rows of light text, then a 48-row solid block, on a 58 mm head.
-      final rgba = Uint8List(384 * 96 * 4)..fillRange(0, 384 * 96 * 4, 255);
-      for (var y = 0; y < 96; y++) {
-        final solid = y >= 48;
-        if (!solid && y % 24 >= 18) continue;
-        for (var x = 20; x < 364; x += solid ? 1 : 4) {
-          final o = (y * 384 + x) * 4;
-          rgba[o] = rgba[o + 1] = rgba[o + 2] = 0;
+    test(
+      'a widget ticket is charged its text at the text rate and its barcode at the dark rate',
+      () {
+        // 48 rows of light text, then a 48-row solid block, on a 58 mm head.
+        final rgba = Uint8List(384 * 96 * 4)..fillRange(0, 384 * 96 * 4, 255);
+        for (var y = 0; y < 96; y++) {
+          final solid = y >= 48;
+          if (!solid && y % 24 >= 18) continue;
+          for (var x = 20; x < 364; x += solid ? 1 : 4) {
+            final o = (y * 384 + x) * 4;
+            rgba[o] = rgba[o + 1] = rgba[o + 2] = 0;
+          }
         }
-      }
-      final image = columnImageBands(rgba, 384, 96, headWidth: 384);
-      // Two text bands, two solid bands, the blank band after the picture.
-      expect(image.bands, hasLength(5));
-      const band = 5 + 384 * 3 + 1;
-      const perDot = 9 / 8;
-      final expected =
-          3 * band + // the text bands and the blank band, at the text rate
-          2 * band * 10 + // the solid block, at the dark rate
-          (3 + _dots(const [0x1b, 0x33, 0]) * perDot) + // ESC 3 0
-          (2 + _dots(const [0x1b, 0x32]) * perDot); // ESC 2
-      final cost = TicketCost(PrintTicket(image.bytes, bands: image.bands), const WritePacing());
-      expect(cost.dueBefore(image.bytes.length) + cost.rest(), closeTo(expected, 1e-6));
-    });
+        final image = columnImageBands(rgba, 384, 96, headWidth: 384);
+        // Two text bands, two solid bands, the blank band after the picture.
+        expect(image.bands, hasLength(5));
+        const band = 5 + 384 * 3 + 1;
+        const perDot = 9 / 8;
+        final expected =
+            3 * band + // the text bands and the blank band, at the text rate
+            2 * band * 10 + // the solid block, at the dark rate
+            (3 + _dots(const [0x1b, 0x33, 0]) * perDot) + // ESC 3 0
+            (2 + _dots(const [0x1b, 0x32]) * perDot); // ESC 2
+        final cost = TicketCost(PrintTicket(image.bytes, bands: image.bands), pacing);
+        expect(cost.dueBefore(image.bytes.length) + cost.rest(), closeTo(expected, 1e-6));
+      },
+    );
   });
 
   group('PrintSession', () {

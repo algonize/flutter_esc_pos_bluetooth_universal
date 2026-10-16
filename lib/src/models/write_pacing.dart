@@ -34,9 +34,10 @@ import 'package:flutter/foundation.dart';
 /// per dot: at 8 dots per millimetre the printer consumes the paper width in
 /// dots per millimetre of paper, so the byte rate follows from the paper size.
 ///
-/// The defaults (50 mm/s text, 5 mm/s solid black, 4 kB burst) printed a full
+/// The defaults (50 mm/s text, 2.5 mm/s dense, 4 kB burst) print a full
 /// receipt with text, a logo, a QR code and a barcode cleanly on a Deli ES421
-/// 58 mm printer. Raise [mmPerSecond] for a faster printer you have tested,
+/// 58 mm printer, which stopped part way through a barcode at 5 mm/s dense.
+/// Raise [mmPerSecond] for a faster printer you have tested,
 /// lower it if text prints as random characters on a long receipt, lower
 /// [darkMmPerSecond] if only the graphics break, or turn pacing off with
 /// `pacing: null` in [BluetoothWriteOptions] on a fast printer.
@@ -44,7 +45,7 @@ import 'package:flutter/foundation.dart';
 class WritePacing {
   const WritePacing({
     this.mmPerSecond = 50,
-    this.darkMmPerSecond = 5,
+    this.darkMmPerSecond = 2.5,
     this.burstBytes = 4096,
     this.denseThreshold = 0.25,
   }) : assert(mmPerSecond > 0),
@@ -91,8 +92,7 @@ class WritePacing {
   ///
   /// A row of raster data takes `widthDots / 8` bytes and a millimetre of
   /// paper is 8 rows, so a millimetre is exactly [widthDots] bytes.
-  int bytesPerSecond(int widthDots) =>
-      (widthDots * mmPerSecond).round().clamp(1, 1 << 30);
+  int bytesPerSecond(int widthDots) => (widthDots * mmPerSecond).round().clamp(1, 1 << 30);
 
   @override
   String toString() =>

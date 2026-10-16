@@ -78,7 +78,14 @@ void main() {
     test('print exactly the dots Generator.image prints', () async {
       final profile = await CapabilityProfile.load();
       final random = Random(42);
-      for (final (width, height) in [(1, 1), (8, 24), (37, 23), (384, 48), (384, 391), (200, 100)]) {
+      for (final (width, height) in [
+        (1, 1),
+        (8, 24),
+        (37, 23),
+        (384, 48),
+        (384, 391),
+        (200, 100),
+      ]) {
         final rgba = _randomRgba(random, width, height);
         final ours = decodePaper(_fast(rgba, width, height, profile, head: 384), headWidth: 384);
         final theirs = decodePaper(_reference(rgba, width, height, profile), headWidth: 384);
@@ -146,7 +153,10 @@ void main() {
       final image = columnImageBands(rgba, 8, 24);
       final data = image.bytes.sublist(image.bands.first.start + 5, image.bands.first.end - 1);
       for (var i = 0; i + 1 < data.length; i++) {
-        expect(data[i] == 0x10 && (data[i + 1] == 0x04 || data[i + 1] == 0x05 || data[i + 1] == 0x14), isFalse);
+        expect(
+          data[i] == 0x10 && (data[i + 1] == 0x04 || data[i + 1] == 0x05 || data[i + 1] == 0x14),
+          isFalse,
+        );
       }
       final paper = decodePaper(image.bytes, headWidth: 8);
       expect(paper.rows[3][2], 0, reason: 'the DLE dot is dropped');
